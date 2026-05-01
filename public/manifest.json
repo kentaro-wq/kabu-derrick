@@ -1,6 +1,6 @@
 {
   "name": "マイ株デリック",
-  "short_name": "株デリック",
+  "short_name": "マイ株デリック",
   "description": "山田さん専用 株式投資管理アシスタント",
   "start_url": "/",
   "display": "standalone",
