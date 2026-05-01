@@ -97,8 +97,12 @@ export default function ChatPage() {
   const [showHistory, setShowHistory] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [imageData, setImageData] = useState<string | null>(null)
+  const [imageType, setImageType] = useState<string>('image/jpeg')
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -147,6 +151,38 @@ export default function ChatPage() {
     setSessions(prev => prev.filter(s => s.id !== id))
   }
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string
+      // Canvas で最大 1024px にリサイズして JPEG に変換
+      const img = new Image()
+      img.onload = () => {
+        const maxPx = 1024
+        const scale = Math.min(1, maxPx / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(img.width * scale)
+        canvas.height = Math.round(img.height * scale)
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        const compressed = canvas.toDataURL('image/jpeg', 0.8)
+        setImagePreview(compressed)
+        setImageType('image/jpeg')
+        setImageData(compressed.split(',')[1]) // base64部分のみ
+      }
+      img.src = dataUrl
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  const clearImage = () => {
+    setImageData(null)
+    setImagePreview(null)
+  }
+
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
     const el = e.target
@@ -166,16 +202,22 @@ export default function ChatPage() {
         .filter(m => m.persona !== 'error')
         .map(m => ({ role: m.role, content: m.content }))
 
-      const userMsg: Message = { role: 'user', persona: 'user', content: question }
+      const userMsg: Message = {
+        role: 'user', persona: 'user',
+        content: imagePreview ? `[画像添付]\n${question}` : question,
+      }
       const nextMessages = [...messages, userMsg]
       setMessages(nextMessages)
       setLoadingText('🤔 考え中...')
+      const capturedImage = imageData
+      const capturedType = imageType
+      clearImage()
 
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, mode: 'main', history }),
+          body: JSON.stringify({ question, mode: 'main', history, imageData: capturedImage, imageType: capturedType }),
         })
         const data = await res.json()
         const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content }
@@ -389,12 +431,39 @@ export default function ChatPage() {
         padding: '12px 14px', borderTop: '1px solid var(--border)', background: 'var(--surface)',
         flexShrink: 0, paddingBottom: 'max(12px, env(safe-area-inset-bottom))'
       }}>
-        {mode === 'main' && (
+        {/* 画像プレビュー */}
+        {imagePreview && (
+          <div style={{ marginBottom: 8, position: 'relative', display: 'inline-block' }}>
+            <img src={imagePreview} alt="添付画像" style={{ height: 72, borderRadius: 8, border: '1px solid var(--border)', display: 'block' }} />
+            <button onClick={clearImage} style={{
+              position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%',
+              background: '#333', border: 'none', color: '#fff', fontSize: 12, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+            }}>×</button>
+          </div>
+        )}
+        {mode === 'main' && !imagePreview && (
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
             Enterで改行 / 送信ボタン（↑）で送信
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          {/* 画像添付ボタン（メインモードのみ） */}
+          {mode === 'main' && (
+            <>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageSelect} style={{ display: 'none' }} />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  width: 44, height: 44, borderRadius: 12, border: '1px solid var(--border)',
+                  background: 'var(--surface2)', color: 'var(--muted)', fontSize: 20,
+                  cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                📷
+              </button>
+            </>
+          )}
           <textarea
             ref={textareaRef}
             value={input}
@@ -409,12 +478,12 @@ export default function ChatPage() {
           />
           <button
             onClick={sendMessage}
-            disabled={loading || !input.trim()}
+            disabled={loading || (!input.trim() && !imageData)}
             style={{
               width: 44, height: 44, borderRadius: 12, border: 'none', flexShrink: 0,
-              background: loading || !input.trim() ? 'var(--surface2)' : 'var(--accent)',
-              color: loading || !input.trim() ? 'var(--muted)' : '#fff',
-              fontSize: 18, cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+              background: loading || (!input.trim() && !imageData) ? 'var(--surface2)' : 'var(--accent)',
+              color: loading || (!input.trim() && !imageData) ? 'var(--muted)' : '#fff',
+              fontSize: 18, cursor: loading || (!input.trim() && !imageData) ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
