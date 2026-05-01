@@ -75,11 +75,41 @@ async function askPersona(personaId: string, question: string, context: string, 
   return msg.content[0].type === 'text' ? msg.content[0].text : ''
 }
 
+const MAIN_SYSTEM = `あなたは「投資アドバイザー」として、ユーザー（山田さん、50歳）の個人投資をサポートする総合アシスタントです。
+以下の視点を統合して助言します：
+- 守りの分析家（リスク・資本保全）
+- 成長論者（上値余地・機会）
+- 逆張り屋（市場の常識への疑問）
+- 長期思考家（5〜15年スパン、複利・配当）
+
+ユーザーの状況を常に念頭に置き、会話の文脈を引き継いで継続的に深い相談に応じてください。
+回答は平易な日本語で、具体的・実践的に。長文でも構いません。必要に応じて箇条書きや数字を使ってください。
+投資は最終的にユーザー自身の判断であることを念頭に、中立的かつ誠実に助言します。`
+
 export async function POST(req: Request) {
   const body = await req.json()
-  const { question, mode, round1 } = body
+  const { question, mode, round1, history } = body
 
   const context = await getPortfolioContext()
+
+  if (mode === 'main') {
+    const priorMessages: { role: 'user' | 'assistant'; content: string }[] = (history ?? []).map(
+      (m: { role: string; content: string }) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })
+    )
+    priorMessages.push({ role: 'user', content: `${context}\n\n質問: ${question}` })
+
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      system: MAIN_SYSTEM,
+      messages: priorMessages,
+    })
+    const content = msg.content[0].type === 'text' ? msg.content[0].text : ''
+    return NextResponse.json({ content })
+  }
 
   if (mode === 'round1') {
     const personaIds = Object.keys(PERSONAS)
