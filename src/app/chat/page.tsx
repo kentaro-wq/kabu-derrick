@@ -2,6 +2,50 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 
+function renderMarkdown(text: string) {
+  const lines = text.split('\n')
+  const elements: React.ReactNode[] = []
+  let key = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    if (/^#{1,3}\s/.test(line)) {
+      const content = line.replace(/^#{1,3}\s/, '')
+      elements.push(
+        <div key={key++} style={{ fontWeight: 700, fontSize: 15, marginTop: 10, marginBottom: 4, color: 'var(--accent)' }}>
+          {inlineFormat(content)}
+        </div>
+      )
+    } else if (/^[-*]\s/.test(line)) {
+      elements.push(
+        <div key={key++} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+          <span style={{ color: 'var(--accent)', flexShrink: 0 }}>•</span>
+          <span>{inlineFormat(line.replace(/^[-*]\s/, ''))}</span>
+        </div>
+      )
+    } else if (/^---+$/.test(line.trim())) {
+      elements.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '10px 0' }} />)
+    } else if (line.trim() === '') {
+      elements.push(<div key={key++} style={{ height: 6 }} />)
+    } else {
+      elements.push(<div key={key++} style={{ marginBottom: 2 }}>{inlineFormat(line)}</div>)
+    }
+  }
+  return elements
+}
+
+function inlineFormat(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)
+  return parts.map((p, i) => {
+    if (p.startsWith('**') && p.endsWith('**'))
+      return <strong key={i} style={{ fontWeight: 700, color: 'var(--text)' }}>{p.slice(2, -2)}</strong>
+    if (p.startsWith('*') && p.endsWith('*'))
+      return <em key={i}>{p.slice(1, -1)}</em>
+    return p
+  })
+}
+
 type Mode = 'main' | 'roundtable'
 
 interface Message {
@@ -219,9 +263,9 @@ export default function ChatPage() {
                 <div style={{
                   background: 'var(--surface)', border: '1px solid rgba(99,102,241,0.3)',
                   borderRadius: '4px 16px 16px 16px', padding: '14px 16px',
-                  fontSize: 14, lineHeight: 1.8, color: 'var(--text)', whiteSpace: 'pre-wrap'
+                  fontSize: 14, lineHeight: 1.8, color: 'var(--text)',
                 }}>
-                  {msg.content}
+                  {renderMarkdown(msg.content)}
                 </div>
               </div>
             )
@@ -242,9 +286,9 @@ export default function ChatPage() {
               <div style={{
                 background: 'var(--surface)', border: `1px solid ${persona.color}33`,
                 borderRadius: '4px 14px 14px 14px', padding: '11px 14px',
-                fontSize: 14, lineHeight: 1.7, color: 'var(--text)', whiteSpace: 'pre-wrap'
+                fontSize: 14, lineHeight: 1.7, color: 'var(--text)',
               }}>
-                {msg.content}
+                {renderMarkdown(msg.content)}
               </div>
             </div>
           )
