@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import Link from 'next/link'
 
 function renderMarkdown(text: string) {
@@ -46,12 +46,31 @@ function inlineFormat(text: string): React.ReactNode {
   })
 }
 
+function formatDate(iso: string) {
+  const d = new Date(iso)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  if (diff < 60000) return 'たった今'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}時間前`
+  if (diff < 7 * 86400000) return `${Math.floor(diff / 86400000)}日前`
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 type Mode = 'main' | 'roundtable'
 
 interface Message {
   role: 'user' | 'assistant'
   persona: string
   content: string
+}
+
+interface Session {
+  id: string
+  title: string
+  messages: Message[]
+  created_at: string
+  updated_at: string
 }
 
 const PERSONAS = [
@@ -74,6 +93,10 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingText, setLoadingText] = useState('')
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -81,7 +104,49 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  // textareaの高さを内容に合わせて自動調整
+  const saveSession = useCallback(async (msgs: Message[], sid: string | null, firstQuestion: string) => {
+    const body = sid
+      ? { id: sid, messages: msgs }
+      : { title: firstQuestion.slice(0, 40), messages: msgs }
+    const res = await fetch('/api/chat-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json()
+    return data.id as string
+  }, [])
+
+  const loadHistory = async () => {
+    setHistoryLoading(true)
+    const res = await fetch('/api/chat-sessions')
+    const data = await res.json()
+    setSessions(data.sessions ?? [])
+    setHistoryLoading(false)
+  }
+
+  const openHistory = () => {
+    setShowHistory(true)
+    loadHistory()
+  }
+
+  const resumeSession = (session: Session) => {
+    setMessages(session.messages)
+    setSessionId(session.id)
+    setMode('main')
+    setShowHistory(false)
+  }
+
+  const deleteSession = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    await fetch('/api/chat-sessions', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    setSessions(prev => prev.filter(s => s.id !== id))
+  }
+
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
     const el = e.target
@@ -97,13 +162,13 @@ export default function ChatPage() {
     setLoading(true)
 
     if (mode === 'main') {
-      // 会話履歴を保持したメインチャット
       const history = messages
         .filter(m => m.persona !== 'error')
         .map(m => ({ role: m.role, content: m.content }))
 
       const userMsg: Message = { role: 'user', persona: 'user', content: question }
-      setMessages(prev => [...prev, userMsg])
+      const nextMessages = [...messages, userMsg]
+      setMessages(nextMessages)
       setLoadingText('🤔 考え中...')
 
       try {
@@ -113,12 +178,18 @@ export default function ChatPage() {
           body: JSON.stringify({ question, mode: 'main', history }),
         })
         const data = await res.json()
-        setMessages(prev => [...prev, { role: 'assistant', persona: 'main', content: data.content }])
+        const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content }
+        const finalMessages = [...nextMessages, aiMsg]
+        setMessages(finalMessages)
+
+        // セッション保存（バックグラウンド）
+        saveSession(finalMessages, sessionId, question).then(id => {
+          if (!sessionId) setSessionId(id)
+        })
       } catch {
         setMessages(prev => [...prev, { role: 'assistant', persona: 'error', content: 'エラーが発生しました。再度お試しください。' }])
       }
     } else {
-      // 円卓モード（毎回リセット）
       setMessages([{ role: 'user', persona: 'user', content: question }])
       setLoadingText('🤔 各AIが考え中...')
 
@@ -161,6 +232,7 @@ export default function ChatPage() {
   const clearChat = () => {
     setMessages([])
     setInput('')
+    setSessionId(null)
   }
 
   return (
@@ -175,11 +247,22 @@ export default function ChatPage() {
               <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--accent)' }}>AI投資相談</div>
             </div>
           </div>
-          {messages.length > 0 && (
-            <button onClick={clearChat} style={{ fontSize: 11, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}>
-              会話をリセット
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={openHistory} style={{
+              fontSize: 11, color: 'var(--muted)', background: 'none',
+              border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer'
+            }}>
+              📋 履歴
             </button>
-          )}
+            {messages.length > 0 && (
+              <button onClick={clearChat} style={{
+                fontSize: 11, color: 'var(--muted)', background: 'none',
+                border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer'
+              }}>
+                新規
+              </button>
+            )}
+          </div>
         </div>
 
         {/* モード切替 */}
@@ -271,7 +354,6 @@ export default function ChatPage() {
             )
           }
 
-          // 円卓モード
           const isReply = msg.persona.endsWith('_reply')
           const personaId = isReply ? msg.persona.replace('_reply', '') : msg.persona
           const persona = PERSONAS.find(p => p.id === personaId) ?? PERSONAS[0]
@@ -340,6 +422,82 @@ export default function ChatPage() {
           </button>
         </div>
       </div>
+
+      {/* 履歴パネル（オーバーレイ） */}
+      {showHistory && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 50,
+            background: 'rgba(0,0,0,0.6)',
+          }}
+          onClick={() => setShowHistory(false)}
+        >
+          <div
+            style={{
+              position: 'absolute', right: 0, top: 0, bottom: 0,
+              width: '85%', maxWidth: 400,
+              background: 'var(--surface)', borderLeft: '1px solid var(--border)',
+              display: 'flex', flexDirection: 'column',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ padding: '16px 16px 12px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>📋 過去の相談</div>
+              <button onClick={() => setShowHistory(false)} style={{ background: 'none', border: 'none', color: 'var(--muted)', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>×</button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+              {historyLoading && (
+                <div style={{ color: 'var(--muted)', fontSize: 13, padding: '20px 16px', textAlign: 'center' }}>読み込み中...</div>
+              )}
+              {!historyLoading && sessions.length === 0 && (
+                <div style={{ color: 'var(--muted)', fontSize: 13, padding: '20px 16px', textAlign: 'center' }}>
+                  まだ相談履歴がありません
+                </div>
+              )}
+              {sessions.map(s => (
+                <div
+                  key={s.id}
+                  onClick={() => resumeSession(s)}
+                  style={{
+                    padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid var(--border)',
+                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500, marginBottom: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {s.title}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                      {formatDate(s.updated_at)} · {s.messages.filter(m => m.persona === 'user').length}問
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => deleteSession(s.id, e)}
+                    style={{ background: 'none', border: 'none', color: 'var(--muted)', fontSize: 16, cursor: 'pointer', flexShrink: 0, padding: '2px 4px', opacity: 0.5 }}
+                  >
+                    🗑
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={() => { clearChat(); setShowHistory(false) }}
+                style={{
+                  width: '100%', padding: '10px', borderRadius: 10, cursor: 'pointer',
+                  background: 'rgba(99,102,241,0.15)', border: '1px solid var(--accent)',
+                  color: 'var(--accent)', fontSize: 13, fontWeight: 600,
+                }}
+              >
+                ＋ 新しい相談を始める
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
