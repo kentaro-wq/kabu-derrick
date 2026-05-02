@@ -302,13 +302,14 @@ export default function OrdersPage() {
         {[
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
+          { href: '/rules', label: 'ルール', icon: '📌' },
           { href: '/chat', label: 'AI相談', icon: '💬' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (
           <Link key={item.href} href={item.href} style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
             color: item.href === '/orders' ? 'var(--accent)' : 'var(--muted)', textDecoration: 'none', fontSize: 10, fontWeight: 500,
-            padding: '4px 16px',
+            padding: '4px 10px',
           }}>
             <span style={{ fontSize: 20 }}>{item.icon}</span>
             {item.label}

@@ -17,13 +17,18 @@ export async function POST(req: Request) {
   return NextResponse.json(data)
 }
 
-// スクショ解析結果で全件置き換え
+// スクショ解析結果で全件置き換え → ルールチェックも非同期実行
 export async function PUT(req: Request) {
   const { holdings } = await req.json()
   await adminSupabase.from('holdings').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   const rows = holdings.map((h: Record<string, unknown>) => ({ ...h, updated_at: new Date().toISOString() }))
   const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // ルールチェックをバックグラウンドで実行（結果は待たない）
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
+
   return NextResponse.json(data)
 }
 

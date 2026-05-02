@@ -300,13 +300,14 @@ export default function Dashboard() {
         {[
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
+          { href: '/rules', label: 'ルール', icon: '📌' },
           { href: '/chat', label: 'AI相談', icon: '💬' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (
           <Link key={item.href} href={item.href} style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-            color: 'var(--muted)', textDecoration: 'none', fontSize: 10, fontWeight: 500,
-            padding: '4px 16px',
+            color: item.href === '/' ? 'var(--accent)' : 'var(--muted)', textDecoration: 'none', fontSize: 10, fontWeight: 500,
+            padding: '4px 10px',
           }}>
             <span style={{ fontSize: 20 }}>{item.icon}</span>
             {item.label}
