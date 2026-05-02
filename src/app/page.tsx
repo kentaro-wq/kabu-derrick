@@ -20,6 +20,42 @@ function fmtGain(n: number | null | undefined) {
   return sign + n.toLocaleString('ja-JP') + '円'
 }
 
+function AssetChart({ snapshots }: { snapshots: { snapshot_date: string; total_assets: number }[] }) {
+  const W = 340, H = 80, PAD = { top: 8, bottom: 20, left: 0, right: 0 }
+  const vals = snapshots.map(s => s.total_assets)
+  const min = Math.min(...vals)
+  const max = Math.max(...vals)
+  const range = max - min || 1
+  const pts = snapshots.map((s, i) => {
+    const x = PAD.left + (i / (snapshots.length - 1)) * (W - PAD.left - PAD.right)
+    const y = PAD.top + (1 - (s.total_assets - min) / range) * (H - PAD.top - PAD.bottom)
+    return `${x},${y}`
+  })
+  const first = snapshots[0].total_assets, last = snapshots[snapshots.length - 1].total_assets
+  const diff = last - first
+  const color = diff >= 0 ? '#34d399' : '#f87171'
+  const firstDate = snapshots[0].snapshot_date.slice(5)
+  const lastDate = snapshots[snapshots.length - 1].snapshot_date.slice(5)
+
+  return (
+    <div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: 'block' }}>
+        <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {snapshots.map((s, i) => {
+          const x = PAD.left + (i / (snapshots.length - 1)) * (W - PAD.left - PAD.right)
+          const y = PAD.top + (1 - (s.total_assets - min) / range) * (H - PAD.top - PAD.bottom)
+          return <circle key={i} cx={x} cy={y} r="2.5" fill={color} />
+        })}
+      </svg>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
+        <span>{firstDate}</span>
+        <span style={{ color, fontWeight: 600 }}>{diff >= 0 ? '+' : ''}{(diff / 10000).toFixed(0)}万円</span>
+        <span>{lastDate}</span>
+      </div>
+    </div>
+  )
+}
+
 function accountLabel(type: string) {
   if (type === 'nisa_growth') return 'NISA成長'
   if (type === 'nisa_tsumitate' || type === 'nisa_tsumitate_old') return 'つみたてNISA'
@@ -28,11 +64,17 @@ function accountLabel(type: string) {
   return type
 }
 
+interface Snapshot {
+  snapshot_date: string
+  total_assets: number
+}
+
 export default function Dashboard() {
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
   const [tsumitate, setTsumitate] = useState<{ name: string; monthly_amount: number }[]>([])
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -41,11 +83,13 @@ export default function Dashboard() {
       fetch('/api/orders').then(r => r.json()),
       fetch('/api/profile').then(r => r.json()),
       fetch('/api/tsumitate').then(r => r.json()).catch(() => ({ settings: [] })),
-    ]).then(([h, o, p, t]) => {
+      fetch('/api/snapshots').then(r => r.json()).catch(() => ({ snapshots: [] })),
+    ]).then(([h, o, p, t, s]) => {
       setHoldings(Array.isArray(h) ? h : [])
       setOrders(Array.isArray(o) ? o : [])
       setProfile(p?.id ? p : null)
       setTsumitate(Array.isArray(t?.settings) ? t.settings : [])
+      setSnapshots(Array.isArray(s?.snapshots) ? s.snapshots : [])
       setLoading(false)
     })
   }, [])
@@ -65,6 +109,30 @@ export default function Dashboard() {
 
   const activeOrders = orders.filter(o => o.status === 'active' && o.deadline)
   const urgentOrders = activeOrders.filter(o => daysUntil(o.deadline!) <= 7)
+
+  // 今日のスナップショットを自動保存（データ読み込み後に一度だけ）
+  useEffect(() => {
+    if (loading || totalAssets === 0) return
+    fetch('/api/snapshots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        total_evaluation: totalInvested,
+        total_unrealized_gain: totalGain,
+        bank_balance: bankBalance,
+        dc_balance: dcBalance,
+        total_assets: totalAssets,
+      }),
+    }).then(r => r.json()).then(saved => {
+      if (saved?.snapshot_date) {
+        setSnapshots(prev => {
+          const filtered = prev.filter(s => s.snapshot_date !== saved.snapshot_date)
+          return [...filtered, { snapshot_date: saved.snapshot_date, total_assets: saved.total_assets }]
+            .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+        })
+      }
+    }).catch(() => {})
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -155,6 +223,14 @@ export default function Dashboard() {
           年間上限 {(nisaLimit / 10000).toFixed(0)}万円
         </div>
       </div>
+
+      {/* 総資産推移グラフ */}
+      {snapshots.length >= 2 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 16, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>総資産推移（過去90日）</div>
+          <AssetChart snapshots={snapshots} />
+        </div>
+      )}
 
       {/* NISA積立 */}
       {tsumitate.length > 0 && (
