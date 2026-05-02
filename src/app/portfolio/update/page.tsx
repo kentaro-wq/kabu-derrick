@@ -34,9 +34,11 @@ export default function PortfolioUpdatePage() {
   const [preview, setPreview] = useState<string | null>(null)
   const [imageData, setImageData] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
-  const [parsed, setParsed] = useState<ParsedHolding[] | null>(null)
+  // 複数スクショ分の結果を蓄積
+  const [allParsed, setAllParsed] = useState<ParsedHolding[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [roundCount, setRoundCount] = useState(0) // 何枚解析済みか
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -57,7 +59,6 @@ export default function PortfolioUpdatePage() {
         const compressed = canvas.toDataURL('image/jpeg', 0.75)
         setPreview(compressed)
         setImageData(compressed.split(',')[1])
-        setParsed(null)
         setError(null)
       }
       img.src = ev.target?.result as string
@@ -79,7 +80,15 @@ export default function PortfolioUpdatePage() {
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       if (!data.holdings || data.holdings.length === 0) throw new Error('銘柄が検出できませんでした。楽天証券の保有一覧画面のスクショをお試しください。')
-      setParsed(data.holdings)
+      // tickerで重複排除して蓄積（後のスクショで上書き）
+      setAllParsed(prev => {
+        const map = new Map(prev.map(h => [h.ticker, h]))
+        for (const h of data.holdings) map.set(h.ticker, h)
+        return Array.from(map.values())
+      })
+      setRoundCount(c => c + 1)
+      setPreview(null)
+      setImageData(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : '解析に失敗しました。別のスクショで試してください。')
       console.error(e)
@@ -88,13 +97,13 @@ export default function PortfolioUpdatePage() {
   }
 
   const save = async () => {
-    if (!parsed) return
+    if (!allParsed.length) return
     setSaving(true)
     try {
       const res = await fetch('/api/holdings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ holdings: parsed }),
+        body: JSON.stringify({ holdings: allParsed }),
       })
       if (!res.ok) throw new Error('保存失敗')
       router.push('/')
@@ -103,6 +112,14 @@ export default function PortfolioUpdatePage() {
       console.error(e)
     }
     setSaving(false)
+  }
+
+  const reset = () => {
+    setAllParsed([])
+    setPreview(null)
+    setImageData(null)
+    setRoundCount(0)
+    setError(null)
   }
 
   return (
@@ -115,31 +132,46 @@ export default function PortfolioUpdatePage() {
         </div>
       </div>
 
+      {/* 説明 */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 16, marginBottom: 14 }}>
-        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.7, marginBottom: 14 }}>
-          楽天証券の<strong>保有銘柄一覧</strong>または<strong>損益管理</strong>画面のスクリーンショットを選択してください。AIが自動で銘柄情報を読み取ります。
+        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.7 }}>
+          楽天証券は<strong>国内株・海外株・投資信託</strong>の画面が別々です。
+          それぞれの保有一覧または損益管理画面のスクショを<strong>1枚ずつ</strong>解析して合算できます。
         </div>
-        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          style={{ width: '100%', padding: 12, borderRadius: 10, border: '1px dashed var(--border)', background: 'var(--surface2)', color: 'var(--muted)', fontSize: 14, cursor: 'pointer' }}
-        >
-          📷 スクリーンショットを選択
-        </button>
       </div>
 
+      {/* 蓄積済みバッジ */}
+      {allParsed.length > 0 && (
+        <div style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 10, padding: '8px 14px', marginBottom: 12, fontSize: 13, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>✅ {roundCount}枚解析済み — <strong style={{ color: 'var(--text)' }}>{allParsed.length}銘柄</strong>を取得</span>
+          <button onClick={reset} style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }}>最初から</button>
+        </div>
+      )}
+
+      {/* ファイル選択（解析結果があるときは「次のスクショ」表示） */}
+      {!preview && (
+        <div style={{ marginBottom: 14 }}>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{ width: '100%', padding: 12, borderRadius: 10, border: '1px dashed var(--border)', background: 'var(--surface)', color: 'var(--muted)', fontSize: 14, cursor: 'pointer' }}
+          >
+            {allParsed.length > 0 ? '📷 次のスクリーンショットを追加' : '📷 スクリーンショットを選択'}
+          </button>
+        </div>
+      )}
+
+      {/* プレビュー＋解析ボタン */}
       {preview && (
         <div style={{ marginBottom: 14 }}>
           <img src={preview} alt="preview" style={{ width: '100%', borderRadius: 10, border: '1px solid var(--border)', display: 'block', marginBottom: 10 }} />
-          {!parsed && (
-            <button
-              onClick={parse}
-              disabled={parsing}
-              style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
-            >
-              {parsing ? '⏳ AI解析中...' : '🔍 この画像を解析する'}
-            </button>
-          )}
+          <button
+            onClick={parse}
+            disabled={parsing}
+            style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+          >
+            {parsing ? '⏳ AI解析中...' : '🔍 この画像を解析する'}
+          </button>
         </div>
       )}
 
@@ -149,13 +181,14 @@ export default function PortfolioUpdatePage() {
         </div>
       )}
 
-      {parsed && (
+      {/* 蓄積された銘柄一覧 */}
+      {allParsed.length > 0 && !preview && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', marginBottom: 10 }}>
-            解析結果（{parsed.length}銘柄）— 内容を確認して保存
+            解析済み銘柄（{allParsed.length}件）— 内容を確認して保存
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-            {parsed.map((h, i) => (
+            {allParsed.map((h, i) => (
               <div key={i} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div>
@@ -182,13 +215,7 @@ export default function PortfolioUpdatePage() {
               disabled={saving}
               style={{ flex: 1, padding: 12, borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
             >
-              {saving ? '保存中...' : '✅ この内容で更新する'}
-            </button>
-            <button
-              onClick={() => { setParsed(null); setPreview(null); setImageData(null) }}
-              style={{ padding: '12px 16px', borderRadius: 10, border: '1px solid var(--border)', background: 'none', color: 'var(--muted)', fontSize: 13, cursor: 'pointer' }}
-            >
-              やり直す
+              {saving ? '保存中...' : `✅ ${allParsed.length}銘柄をDBに保存する`}
             </button>
           </div>
         </div>

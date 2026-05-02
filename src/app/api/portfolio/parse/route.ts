@@ -66,12 +66,29 @@ export async function POST(req: Request) {
     })
 
     const text = msg.content[0].type === 'text' ? msg.content[0].text : '{}'
+    console.log('[parse] raw response (first 500):', text.slice(0, 500))
     try {
-      const match = text.match(/\{[\s\S]*\}/)
-      const parsed = match ? JSON.parse(match[0]) : { holdings: [] }
-      return NextResponse.json(parsed)
-    } catch {
-      return NextResponse.json({ error: '解析失敗', raw: text }, { status: 500 })
+      // holdingsキーを含む最初のJSONブロックを抽出（余分なテキスト対策）
+      const holdingsMatch = text.match(/"holdings"\s*:\s*\[[\s\S]*?\]/)
+      if (holdingsMatch) {
+        // holdingsを含む外側の {} を取得
+        const startIdx = text.lastIndexOf('{', text.indexOf(holdingsMatch[0]))
+        const sub = text.slice(startIdx >= 0 ? startIdx : 0)
+        // 対応する } を探す（ブレースカウント）
+        let depth = 0, endIdx = -1
+        for (let i = 0; i < sub.length; i++) {
+          if (sub[i] === '{') depth++
+          else if (sub[i] === '}') { depth--; if (depth === 0) { endIdx = i; break } }
+        }
+        const jsonStr = endIdx >= 0 ? sub.slice(0, endIdx + 1) : sub
+        const parsed = JSON.parse(jsonStr)
+        return NextResponse.json(parsed)
+      }
+      // holdingsキーがない場合は空で返す
+      return NextResponse.json({ holdings: [] })
+    } catch (parseErr) {
+      console.error('[parse] JSON parse error:', parseErr, 'raw:', text.slice(0, 300))
+      return NextResponse.json({ error: '解析失敗: AIが不正なJSONを返しました', raw: text.slice(0, 200) }, { status: 500 })
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err)
