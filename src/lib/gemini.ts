@@ -1,4 +1,4 @@
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1/models'
 
 type TextPart = { text: string }
 type ImagePart = { inline_data: { mime_type: string; data: string } }
