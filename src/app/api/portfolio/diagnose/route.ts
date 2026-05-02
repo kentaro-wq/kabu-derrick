@@ -16,10 +16,22 @@ export async function GET() {
     return NextResponse.json({ ...result, error: 'GEMINI_API_KEY is not set in Vercel env vars' }, { status: 500 })
   }
 
+  // まず利用可能なモデル一覧を取得
+  try {
+    const listRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+      { signal: AbortSignal.timeout(10000) }
+    )
+    const listData = await listRes.json() as { models?: Array<{ name: string }> }
+    result.availableModels = (listData.models ?? []).map((m: { name: string }) => m.name).filter((n: string) => n.includes('gemini'))
+  } catch {
+    result.availableModels = 'fetch failed'
+  }
+
   const t0 = Date.now()
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
