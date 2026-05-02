@@ -44,6 +44,8 @@ export default function RulesPage() {
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
   const [extracting, setExtracting] = useState<string | null>(null) // ticker
   const [extractMsg, setExtractMsg] = useState<Record<string, string>>({})
+  const [fetchingPrices, setFetchingPrices] = useState(false)
+  const [priceResult, setPriceResult] = useState<{ updated: number; failed: string[] } | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -123,6 +125,24 @@ export default function RulesPage() {
     setChecking(false)
   }
 
+  const fetchPricesAndCheck = async () => {
+    setFetchingPrices(true)
+    setPriceResult(null)
+    setCheckResult(null)
+    try {
+      const res = await fetch('/api/prices', { method: 'POST' })
+      const data = await res.json()
+      setPriceResult({ updated: data.updated, failed: data.failed ?? [] })
+      if (data.ruleCheck) setCheckResult(data.ruleCheck)
+      // 保有銘柄の株価表示を最新化するため再取得
+      const h = await fetch('/api/holdings').then(r => r.json())
+      if (Array.isArray(h)) setHoldings(h)
+    } catch {
+      setPriceResult({ updated: 0, failed: [] })
+    }
+    setFetchingPrices(false)
+  }
+
   const extractFromChat = async (h: Holding, force = false) => {
     setExtracting(h.ticker)
     setExtractMsg(prev => ({ ...prev, [h.ticker]: '' }))
@@ -166,18 +186,41 @@ export default function RulesPage() {
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>銘柄ルール管理</div>
           </div>
         </div>
-        <button
-          onClick={runCheck}
-          disabled={checking || rules.length === 0}
-          style={{
-            fontSize: 12, fontWeight: 600, padding: '7px 12px', borderRadius: 8, border: 'none',
-            background: checking ? 'var(--surface2)' : 'rgba(99,102,241,0.8)',
-            color: checking ? 'var(--muted)' : '#fff', cursor: 'pointer',
-          }}
-        >
-          {checking ? '⏳ 判定中...' : '🔍 今すぐ確認'}
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={fetchPricesAndCheck}
+            disabled={fetchingPrices || checking}
+            style={{
+              fontSize: 12, fontWeight: 600, padding: '7px 10px', borderRadius: 8, border: 'none',
+              background: fetchingPrices ? 'var(--surface2)' : '#0f2a1a',
+              color: fetchingPrices ? 'var(--muted)' : '#4ade80', cursor: 'pointer',
+            }}
+          >
+            {fetchingPrices ? '⏳' : '📡 株価更新'}
+          </button>
+          <button
+            onClick={runCheck}
+            disabled={checking || fetchingPrices || rules.length === 0}
+            style={{
+              fontSize: 12, fontWeight: 600, padding: '7px 10px', borderRadius: 8, border: 'none',
+              background: checking ? 'var(--surface2)' : 'rgba(99,102,241,0.8)',
+              color: checking ? 'var(--muted)' : '#fff', cursor: 'pointer',
+            }}
+          >
+            {checking ? '⏳' : '🔍 確認'}
+          </button>
+        </div>
       </div>
+
+      {/* 株価更新結果 */}
+      {priceResult && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 12, marginBottom: 12, fontSize: 12 }}>
+          <span style={{ color: 'var(--green)', fontWeight: 600 }}>📡 {priceResult.updated}銘柄の株価を更新</span>
+          {priceResult.failed.length > 0 && (
+            <span style={{ color: 'var(--muted)', marginLeft: 8 }}>取得失敗: {priceResult.failed.join(', ')}</span>
+          )}
+        </div>
+      )}
 
       {/* チェック結果 */}
       {checkResult && (
