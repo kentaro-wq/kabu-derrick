@@ -98,11 +98,22 @@ export default function ChatPage() {
   const [editingPolicy, setEditingPolicy] = useState(false)
   const [policyDraft, setPolicyDraft] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const lastAiMsgRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (loading) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      return
+    }
+    const lastMsg = messages[messages.length - 1]
+    if (!lastMsg) return
+    if (lastMsg.role === 'assistant' && lastAiMsgRef.current) {
+      lastAiMsgRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages, loading])
 
   useEffect(() => {
@@ -306,6 +317,8 @@ export default function ChatPage() {
 
   const clearChat = () => { setMessages([]); setInput(''); setSessionId(null) }
 
+  const lastAiIndex = messages.reduce((last, m, i) => m.role === 'assistant' ? i : last, -1)
+
   const toggleRoundtable = (idx: number) => {
     setExpandedRoundtables(prev => {
       const next = new Set(prev)
@@ -414,6 +427,7 @@ export default function ChatPage() {
         )}
 
         {messages.map((msg, i) => {
+          const aiRef = i === lastAiIndex ? lastAiMsgRef : undefined
           if (msg.persona === 'user') {
             return (
               <div key={i} style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
@@ -425,12 +439,12 @@ export default function ChatPage() {
           }
 
           if (msg.persona === 'error') {
-            return <div key={i} style={{ color: 'var(--red)', fontSize: 13, marginBottom: 14, padding: '10px 14px', background: '#3b1515', borderRadius: 10 }}>{msg.content}</div>
+            return <div key={i} ref={aiRef} style={{ color: 'var(--red)', fontSize: 13, marginBottom: 14, padding: '10px 14px', background: '#3b1515', borderRadius: 10 }}>{msg.content}</div>
           }
 
           if (msg.persona === 'main') {
             return (
-              <div key={i} style={{ marginBottom: 16 }}>
+              <div key={i} ref={aiRef} style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 6, fontWeight: 600 }}>🤖 投資アドバイザー</div>
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
                   {renderMarkdown(msg.content)}
@@ -443,7 +457,7 @@ export default function ChatPage() {
             const expanded = expandedRoundtables.has(i)
             const subCount = msg.subMessages?.length ?? 0
             return (
-              <div key={i} style={{ marginBottom: 16 }}>
+              <div key={i} ref={aiRef} style={{ marginBottom: 16 }}>
                 {/* 統合まとめ */}
                 <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 6, fontWeight: 600 }}>🔮 円卓 統合まとめ → 投資アドバイザー</div>
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
@@ -489,7 +503,7 @@ export default function ChatPage() {
           const personaId = isReply ? msg.persona.replace('_reply', '') : msg.persona
           const persona = PERSONAS.find(p => p.id === personaId) ?? PERSONAS[0]
           return (
-            <div key={i} style={{ marginBottom: 12 }}>
+            <div key={i} ref={aiRef} style={{ marginBottom: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
                 <span style={{ fontSize: 13 }}>{persona.emoji}</span>
                 <span style={{ fontSize: 11, fontWeight: 600, color: persona.color }}>{persona.label}</span>
