@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { geminiGenerate } from '@/lib/gemini'
 
 export const runtime = 'edge'
 
@@ -14,30 +15,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '画像が大きすぎます（5MB超）。もう少し小さい画像でお試しください。' }, { status: 400 })
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    console.error('[parse] ANTHROPIC_API_KEY is not set')
-    return NextResponse.json({ error: 'サーバー設定エラー: APIキーが未設定です' }, { status: 500 })
-  }
-  console.log('[parse] API key present, length=', apiKey.length)
-
   const mediaType = (imageType === 'image/png' || imageType === 'image/gif' || imageType === 'image/webp')
-    ? imageType as 'image/png' | 'image/gif' | 'image/webp'
+    ? imageType as string
     : 'image/jpeg'
 
-  const body = JSON.stringify({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 1024,
-    messages: [{
-      role: 'user',
-      content: [
-        {
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: imageData },
-        },
-        {
-          type: 'text',
-          text: `この画像は楽天証券の保有銘柄一覧または損益管理画面です。
+  try {
+    console.log('[parse] calling Gemini API')
+    const text = await geminiGenerate({
+      model: 'gemini-1.5-flash',
+      maxTokens: 1024,
+      messages: [{
+        role: 'user',
+        parts: [
+          { inline_data: { mime_type: mediaType, data: imageData } },
+          {
+            text: `この画像は楽天証券の保有銘柄一覧または損益管理画面です。
 見えている各銘柄の情報をJSONで抽出してください。
 
 口座種別のマッピング:
@@ -64,35 +56,11 @@ export async function POST(req: Request) {
 }
 
 不明な項目はnullとしてください。JSONのみ返してください。`,
-        },
-      ],
-    }],
-  })
-
-  console.log('[parse] calling Anthropic API via fetch, body length=', body.length)
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body,
-      signal: AbortSignal.timeout(20000),
+          },
+        ],
+      }],
     })
 
-    console.log('[parse] Anthropic response status=', res.status)
-
-    if (!res.ok) {
-      const errText = await res.text()
-      console.error('[parse] Anthropic error response:', errText.slice(0, 500))
-      return NextResponse.json({ error: `AI APIエラー(${res.status}): ${errText.slice(0, 200)}` }, { status: 500 })
-    }
-
-    const data = await res.json() as { content: Array<{ type: string; text: string }> }
-    const text = data.content?.[0]?.type === 'text' ? data.content[0].text : '{}'
     console.log('[parse] raw response (first 500):', text.slice(0, 500))
 
     try {
@@ -116,9 +84,7 @@ export async function POST(req: Request) {
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    console.error('[parse] fetch error:', errMsg)
-    return NextResponse.json({
-      error: `AI解析エラー: ${errMsg.slice(0, 300)}`,
-    }, { status: 500 })
+    console.error('[parse] Gemini error:', errMsg)
+    return NextResponse.json({ error: `AI解析エラー: ${errMsg.slice(0, 300)}` }, { status: 500 })
   }
 }

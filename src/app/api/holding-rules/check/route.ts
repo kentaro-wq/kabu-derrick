@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 type CustomRule = { label: string; value: string }
 
@@ -24,7 +22,6 @@ export async function POST() {
 
   const holdingMap = new Map(holdings.map(h => [h.ticker, h]))
 
-  // ─── ポートフォリオ全体の健全性チェック ─────────────────────────────────
   const totalCost = holdings.reduce((s, h) => s + (h.purchase_price ?? 0) * (h.quantity ?? 0), 0)
   const totalEval = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
   const totalGain = holdings.reduce((s, h) => s + (h.unrealized_gain ?? 0), 0)
@@ -32,14 +29,12 @@ export async function POST() {
 
   const portfolioAlerts: string[] = []
 
-  // 全体含み損アラート
   if (totalGainPct <= -20) {
     portfolioAlerts.push(`🚨 ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%に達しています。損切りルールを確認してください。`)
   } else if (totalGainPct <= -10) {
     portfolioAlerts.push(`⚠️ ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%です。各銘柄のルールを見直してください。`)
   }
 
-  // 集中リスクチェック（1銘柄が評価額全体の30%超）
   if (totalEval > 0) {
     holdings.forEach(h => {
       const share = (h.evaluation_amount ?? 0) / totalEval * 100
@@ -51,14 +46,12 @@ export async function POST() {
     })
   }
 
-  // ─── 個別銘柄ルールの評価テキスト構成 ────────────────────────────────────
   const ruleTexts = rules.map(r => {
     const h = holdingMap.get(r.ticker)
     const status = h
       ? `現在株価: ${h.current_price?.toLocaleString() ?? '不明'}円 / 評価額: ${h.evaluation_amount?.toLocaleString() ?? '不明'}円 / 含み損益: ${h.unrealized_gain != null ? (h.unrealized_gain >= 0 ? '+' : '') + h.unrealized_gain.toLocaleString() + '円' : '不明'} (${h.unrealized_gain_pct != null ? (h.unrealized_gain_pct >= 0 ? '+' : '') + h.unrealized_gain_pct.toFixed(2) + '%' : '不明'})`
       : '（保有データなし）'
 
-    // custom_rules を文字列化してプロンプトに含める
     const customRulesText = Array.isArray(r.custom_rules) && r.custom_rules.length > 0
       ? '\nカスタムルール: ' + (r.custom_rules as CustomRule[])
           .map(cr => `${cr.label}: ${cr.value}`)
@@ -75,12 +68,12 @@ export async function POST() {
 
   const today = new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })
 
-  const msg = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 1000,
+  const text = await geminiGenerate({
+    model: 'gemini-1.5-flash',
+    maxTokens: 1000,
     messages: [{
       role: 'user',
-      content: `今日は${today}です。以下の保有銘柄について、設定された売却条件・期限付きルール・カスタムルールが現在の状況に照らして「アクション要」かどうかを機械的に判定してください。
+      parts: [{ text: `今日は${today}です。以下の保有銘柄について、設定された売却条件・期限付きルール・カスタムルールが現在の状況に照らして「アクション要」かどうかを機械的に判定してください。
 
 ${ruleTexts}
 
@@ -97,18 +90,16 @@ ${ruleTexts}
     { "ticker": "XXXX", "name": "銘柄名", "reason": "該当した条件と判断理由（50字以内）" }
   ],
   "summary": "全体的な一言コメント（60字以内）"
-}`,
+}` }],
     }],
   })
 
-  const text = msg.content[0].type === 'text' ? msg.content[0].text : '{}'
   let result: { triggered: { ticker: string; name: string; reason: string }[]; summary: string } = { triggered: [], summary: '' }
   try {
     const match = text.match(/\{[\s\S]*\}/)
     if (match) result = JSON.parse(match[0])
   } catch { /* ignore */ }
 
-  // ─── LINE通知（個別銘柄アラート + ポートフォリオ全体警告） ─────────────
   const hasIndividualAlert = result.triggered.length > 0
   const hasPortfolioAlert = portfolioAlerts.length > 0
 

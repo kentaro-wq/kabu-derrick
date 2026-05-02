@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST() {
   const { data: sessions } = await adminSupabase
@@ -27,15 +25,14 @@ export async function POST() {
     return `【${s.title}】\n${lines}`
   }).join('\n\n---\n\n')
 
-  const msg = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 600,
+  const content = await geminiGenerate({
+    model: 'gemini-1.5-flash',
+    maxTokens: 600,
     messages: [{
       role: 'user',
-      content: `以下は山田さん（50歳、個別株初心者、NISA活用中、65歳までに3000万円目標）の投資相談の会話履歴です。\n\n${summary}\n\n会話から読み取れる山田さんの**現在の投資方針・決定事項・優先順位**を箇条書きで整理してください。「決めたこと」「重視していること」「保留・検討中のこと」の3カテゴリで整理すると良いです。200字程度で簡潔に。`,
+      parts: [{ text: `以下は山田さん（50歳、個別株初心者、NISA活用中、65歳までに3000万円目標）の投資相談の会話履歴です。\n\n${summary}\n\n会話から読み取れる山田さんの**現在の投資方針・決定事項・優先順位**を箇条書きで整理してください。「決めたこと」「重視していること」「保留・検討中のこと」の3カテゴリで整理すると良いです。200字程度で簡潔に。` }],
     }],
   })
 
-  const content = msg.content[0].type === 'text' ? msg.content[0].text : ''
   return NextResponse.json({ content })
 }

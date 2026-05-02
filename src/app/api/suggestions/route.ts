@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function GET() {
   const [holdingsRes, ordersRes, tsumitateRes] = await Promise.all([
@@ -19,16 +17,15 @@ export async function GET() {
   if (tsumitate.length > 0) ctx += '\nNISA積立: ' + tsumitate.map((t: { name: string; monthly_amount: number }) => `${t.name}月${t.monthly_amount.toLocaleString()}円`).join(', ')
   if (orders.length > 0) ctx += '\n執行中注文: ' + orders.map(o => `${o.name}${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 期限${o.deadline}`).join(', ')
 
-  const msg = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 300,
+  const text = await geminiGenerate({
+    model: 'gemini-1.5-flash',
+    maxTokens: 300,
     messages: [{
       role: 'user',
-      content: `以下は山田さん（50歳、個別株初心者、NISA活用中）の現在の投資状況です。\n${ctx}\n\n今この人が気になっていそうな投資相談の質問を4つ生成してください。具体的な銘柄名・金額・状況に言及した実践的な質問にしてください。JSON配列で返してください。例: ["質問1", "質問2", "質問3", "質問4"]`,
+      parts: [{ text: `以下は山田さん（50歳、個別株初心者、NISA活用中）の現在の投資状況です。\n${ctx}\n\n今この人が気になっていそうな投資相談の質問を4つ生成してください。具体的な銘柄名・金額・状況に言及した実践的な質問にしてください。JSON配列で返してください。例: ["質問1", "質問2", "質問3", "質問4"]` }],
     }],
   })
 
-  const text = msg.content[0].type === 'text' ? msg.content[0].text : '[]'
   try {
     const match = text.match(/\[[\s\S]*\]/)
     const suggestions = match ? JSON.parse(match[0]) : []

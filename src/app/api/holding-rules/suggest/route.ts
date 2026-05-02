@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-// 銘柄に対してAIが能動的にルールを設計・提案する
 export async function POST(req: Request) {
   const { ticker, name } = await req.json()
   if (!ticker || !name) return NextResponse.json({ error: 'ticker and name required' }, { status: 400 })
@@ -20,7 +17,6 @@ export async function POST(req: Request) {
   const policy = policyRes.data?.content ?? '（未設定）'
   const profile = profileRes.data
 
-  // 関連セッションを抽出（銘柄名の複数キーワードで検索）
   const allSessions = allSessionsRes.data ?? []
   const cleaned = name
     .replace(/（.*?）|\(.*?\)/g, '')
@@ -52,7 +48,12 @@ export async function POST(req: Request) {
     ? `目標: ${(profile.target_amount / 10000).toFixed(0)}万円 / NISA成長枠 残り: ${((profile.nisa_growth_limit - profile.nisa_growth_used) / 10000).toFixed(0)}万円`
     : ''
 
-  const prompt = `あなたは山田さん（50歳、投資初心者）の投資ルール設計を支援するアドバイザーです。
+  const text = await geminiGenerate({
+    model: 'gemini-1.5-flash',
+    maxTokens: 1200,
+    messages: [{
+      role: 'user',
+      parts: [{ text: `あなたは山田さん（50歳、投資初心者）の投資ルール設計を支援するアドバイザーです。
 「人の感情・思い込みを排し、AIの指針に機械的に従う」という運用方針のもと、${name}（${ticker}）の運用ルールを設計してください。
 
 【${name} の現在状況】
@@ -85,16 +86,10 @@ ${chatContext}
   ]
 }
 
-custom_rules には固定項目に収まらない重要ルールを3〜5件追加してください。
-例: 損切りライン、買い増し条件、決算確認ルール、テーマ終了条件、NISA口座での特別ルール等`
-
-  const msg = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1200,
-    messages: [{ role: 'user', content: prompt }],
+custom_rules には固定項目に収まらない重要ルールを3〜5件追加してください。` }],
+    }],
   })
 
-  const text = msg.content[0].type === 'text' ? msg.content[0].text : ''
   try {
     const match = text.match(/\{[\s\S]*\}/)
     if (!match) return NextResponse.json({ error: '提案生成失敗' }, { status: 500 })

@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { geminiGenerate, GeminiMessage } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const PERSONAS = {
   conservative: {
@@ -78,21 +76,6 @@ async function getPortfolioContext(): Promise<string> {
   return ctx
 }
 
-async function askPersona(personaId: string, question: string, context: string, extraContext?: string): Promise<string> {
-  const persona = PERSONAS[personaId as keyof typeof PERSONAS]
-  const userContent = extraContext
-    ? `${context}\n\n${extraContext}\n\n質問: ${question}`
-    : `${context}\n\n質問: ${question}`
-
-  const msg = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 400,
-    system: persona.system,
-    messages: [{ role: 'user', content: userContent }],
-  })
-  return msg.content[0].type === 'text' ? msg.content[0].text : ''
-}
-
 const MAIN_SYSTEM = `あなたは「投資アドバイザー」として、ユーザー（山田さん、50歳）の個人投資をサポートする総合アシスタントです。
 以下の視点を統合して助言します：
 - 守りの分析家（リスク・資本保全）
@@ -111,11 +94,10 @@ export async function POST(req: Request) {
   const context = await getPortfolioContext()
 
   if (mode === 'main') {
-    type MsgContent = string | Anthropic.Messages.ContentBlockParam[]
-    const priorMessages: { role: 'user' | 'assistant'; content: MsgContent }[] = (history ?? []).map(
+    const priorMessages: GeminiMessage[] = (history ?? []).map(
       (m: { role: string; content: string }) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
+        role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model',
+        parts: [{ text: m.content }],
       })
     )
 
@@ -123,46 +105,55 @@ export async function POST(req: Request) {
     if (imageData && imageType) {
       priorMessages.push({
         role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: imageType as Anthropic.Messages.Base64ImageSource['media_type'], data: imageData },
-          },
-          { type: 'text', text: textContent },
+        parts: [
+          { inline_data: { mime_type: imageType as string, data: imageData } },
+          { text: textContent },
         ],
       })
     } else {
-      priorMessages.push({ role: 'user', content: textContent })
+      priorMessages.push({ role: 'user', parts: [{ text: textContent }] })
     }
 
-    const msg = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 3000,
+    const content = await geminiGenerate({
+      model: 'gemini-1.5-flash',
+      maxTokens: 3000,
       system: MAIN_SYSTEM,
       messages: priorMessages,
     })
-    const content = msg.content[0].type === 'text' ? msg.content[0].text : ''
     return NextResponse.json({ content })
   }
 
   if (mode === 'round1') {
     const personaIds = Object.keys(PERSONAS)
     const responses = await Promise.all(
-      personaIds.map(async id => ({
-        persona: id,
-        label: PERSONAS[id as keyof typeof PERSONAS].label,
-        content: await askPersona(id, question, context),
-      }))
+      personaIds.map(async id => {
+        const persona = PERSONAS[id as keyof typeof PERSONAS]
+        const content = await geminiGenerate({
+          model: 'gemini-1.5-flash',
+          maxTokens: 400,
+          system: persona.system,
+          messages: [{ role: 'user', parts: [{ text: `${context}\n\n質問: ${question}` }] }],
+        })
+        return { persona: id, label: persona.label, content }
+      })
     )
     return NextResponse.json({ responses })
   }
 
   if (mode === 'round2' && round1) {
     const othersText = round1.map((r: { label: string; content: string }) => `【${r.label}の意見】\n${r.content}`).join('\n\n')
-    const extraContext = `\n他のAIの意見:\n${othersText}\n\n上記の意見を読んだうえで、あなたの立場から補足・反論・同意を述べてください。`
-    const contrarianResponse = await askPersona('contrarian', question, context, extraContext)
+    const persona = PERSONAS.contrarian
+    const content = await geminiGenerate({
+      model: 'gemini-1.5-flash',
+      maxTokens: 400,
+      system: persona.system,
+      messages: [{
+        role: 'user',
+        parts: [{ text: `${context}\n\n質問: ${question}\n\n他のAIの意見:\n${othersText}\n\n上記の意見を読んだうえで、あなたの立場から補足・反論・同意を述べてください。` }],
+      }],
+    })
     return NextResponse.json({
-      responses: [{ persona: 'contrarian', label: PERSONAS.contrarian.label, content: contrarianResponse }],
+      responses: [{ persona: 'contrarian', label: persona.label, content }],
     })
   }
 
@@ -172,16 +163,15 @@ export async function POST(req: Request) {
       ...body.round2.map((r: { label: string; content: string }) => `【${r.label}（再考）】\n${r.content}`),
     ].join('\n\n')
 
-    const msg = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
+    const content = await geminiGenerate({
+      model: 'gemini-1.5-flash',
+      maxTokens: 2000,
       system: MAIN_SYSTEM,
       messages: [{
         role: 'user',
-        content: `${context}\n\n質問: ${question}\n\n【円卓での議論】\n${allOpinions}\n\n以上の議論を踏まえて、山田さんへの統合見解・具体的な結論をまとめてください。どの意見が重要か、何をすべきかを明確に示してください。`,
+        parts: [{ text: `${context}\n\n質問: ${question}\n\n【円卓での議論】\n${allOpinions}\n\n以上の議論を踏まえて、山田さんへの統合見解・具体的な結論をまとめてください。どの意見が重要か、何をすべきかを明確に示してください。` }],
       }],
     })
-    const content = msg.content[0].type === 'text' ? msg.content[0].text : ''
     return NextResponse.json({ content })
   }
 
