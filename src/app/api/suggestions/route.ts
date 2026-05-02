@@ -20,7 +20,7 @@ export async function GET() {
   if (orders.length > 0) ctx += '\n執行中注文: ' + orders.map(o => `${o.name}${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 期限${o.deadline}`).join(', ')
 
   const msg = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: 'claude-3-5-haiku-20241022',
     max_tokens: 300,
     messages: [{
       role: 'user',

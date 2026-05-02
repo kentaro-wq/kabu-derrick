@@ -93,6 +93,7 @@ export async function POST() {
   }
 
   const cfg = levelConfig[worstLevel as Exclude<CrashLevel, 'none'>]
+  if (!cfg) return NextResponse.json({ level: worstLevel, indexLine, notified: false })
   const lineMsg = `${cfg.icon} マイ株デリック 市場${cfg.headline}\n${today}\n\n${indexLine}\n\n${cfg.guidance}`
 
   await sendLineMessage(lineMsg)
