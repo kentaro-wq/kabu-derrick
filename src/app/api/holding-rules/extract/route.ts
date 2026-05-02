@@ -4,8 +4,20 @@ import { adminSupabase } from '@/lib/supabase'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-// チャット履歴から銘柄ルールを抽出して保存
-// POST { ticker, name } — 既存ルールがある場合は上書きしない（force: true で強制上書き）
+// 銘柄名から検索キーワードを生成（前方一致用）
+function nameKeywords(name: string): string[] {
+  // 「川崎重工業」→「川崎重工」のように末尾の業・株・HD等を除いた前方4〜6文字も含める
+  const cleaned = name
+    .replace(/（.*?）|\(.*?\)/g, '') // カッコ内を除去
+    .replace(/(株式会社|ホールディングス|インデックス|ファンド|スリム).*$/g, '')
+    .trim()
+  const keywords: string[] = [name]
+  if (cleaned !== name) keywords.push(cleaned)
+  // 先頭4文字以上なら前方部分も追加
+  if (cleaned.length >= 4) keywords.push(cleaned.slice(0, Math.min(cleaned.length, 6)))
+  return [...new Set(keywords)]
+}
+
 export async function POST(req: Request) {
   const { ticker, name, force = false } = await req.json()
   if (!ticker || !name) return NextResponse.json({ error: 'ticker and name required' }, { status: 400 })
@@ -22,69 +34,80 @@ export async function POST(req: Request) {
     }
   }
 
-  // チャット履歴を取得（最新50セッション、銘柄名またはtickerを含むもの）
+  // チャット履歴を取得
   const { data: allSessions } = await adminSupabase
     .from('chat_sessions')
     .select('title, messages, created_at')
     .order('created_at', { ascending: false })
-    .limit(50)
+    .limit(60)
 
   if (!allSessions || allSessions.length === 0) {
     return NextResponse.json({ skipped: true, reason: 'チャット履歴なし' })
   }
 
-  // 銘柄名またはtickerを含むセッションを絞り込む
+  // 銘柄名キーワードで検索（前方一致・部分一致）
+  const keywords = nameKeywords(name)
   const relevant = allSessions.filter(s => {
     const text = JSON.stringify(s.messages ?? []) + (s.title ?? '')
-    return text.includes(name) || text.includes(ticker)
+    return keywords.some(kw => text.includes(kw)) || text.includes(ticker)
   })
 
-  if (relevant.length === 0) {
-    return NextResponse.json({ skipped: true, reason: '関連チャットなし' })
-  }
+  // 関連セッションがなければ直近3件で試みる（一般的な方針議論から抽出）
+  const targetSessions = relevant.length > 0 ? relevant.slice(0, 3) : allSessions.slice(0, 3)
+  const sourceLabel = relevant.length > 0 ? `${name}関連` : '直近の相談'
 
-  // 関連セッションから会話テキストを抽出（長くなりすぎないよう上位3セッション）
-  const chatText = relevant.slice(0, 3).map(s => {
-    const messages: { role: string; content: string }[] = Array.isArray(s.messages) ? s.messages : []
-    return `【${s.title ?? '無題'}（${new Date(s.created_at).toLocaleDateString('ja-JP')}）】\n` +
-      messages.map(m => `${m.role === 'user' ? '私' : 'AI'}: ${m.content}`).join('\n')
+  // セッションごとにユーザー発言のみ抽出（最大20件）+ AI返答は重要部分のみ
+  const chatText = targetSessions.map(s => {
+    const messages: { role: string; content: string; persona?: string }[] = Array.isArray(s.messages) ? s.messages : []
+
+    // ユーザーメッセージを全件、AIメッセージは最初と最後の2件だけ抜粋
+    const userMsgs = messages.filter(m => m.role === 'user').slice(0, 20)
+    const aiMsgs = messages.filter(m => m.role === 'assistant')
+    const aiSample = [...aiMsgs.slice(0, 1), ...aiMsgs.slice(-1)].filter(Boolean)
+
+    const combined = [...userMsgs, ...aiSample]
+      .map(m => `${m.role === 'user' ? '私' : 'AI'}: ${String(m.content).slice(0, 500)}`)
+      .join('\n')
+
+    return `【${s.title ?? '無題'}（${new Date(s.created_at).toLocaleDateString('ja-JP')}）】\n${combined}`
   }).join('\n\n---\n\n')
 
   const msg = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 600,
+    max_tokens: 700,
     messages: [{
       role: 'user',
-      content: `以下は${name}（${ticker}）に関する投資相談のチャット履歴です。
-この会話から、この銘柄について合意・決定されたルールや方針を抽出してください。
+      content: `以下は${name}（${ticker}）に関連する投資相談の記録（${sourceLabel}、${targetSessions.length}件）です。
+この会話から、この銘柄について合意・言及されたルールや方針を抽出してください。
+明確に述べられていない項目は null にしてください。
 
-【チャット履歴】
+【会話記録】
 ${chatText}
 
-以下のJSON形式のみで返してください（情報がない項目は null）:
+返却形式（JSONのみ）:
 {
-  "purpose": "購入目的（例: 長期配当、NISA成長枠活用）",
-  "policy_basis": "方針ベース（例: 高配当・連続増配への長期投資方針）",
-  "sell_conditions": "売却条件（例: 含み益+30%超、配当利回り3%割れ時）",
-  "dividend_notes": "配当メモ（例: 配当利回り4.2%、配当目標への貢献）",
-  "timeline_notes": "期限付きルール（例: 2025年末までに株価○○円超なら売却）",
-  "raw_agreement": "AIとの取り決め要約（会話で合意した内容を100字以内で）"
+  "purpose": "購入目的（例: 高配当長期保有、NISA活用）",
+  "policy_basis": "どの方針に基づくか（例: 高配当株への長期投資方針）",
+  "sell_conditions": "売却・損切り条件（例: 損切り-15%、テーマ終了時）",
+  "dividend_notes": "配当に関する記載",
+  "timeline_notes": "期限付きルール（例: 158円で売却予定）",
+  "raw_agreement": "会話で合意した要点を150字以内で"
 }`
     }],
   })
 
-  const text = msg.content[0].type === 'text' ? msg.content[0].text : '{}'
+  const text = msg.content[0].type === 'text' ? msg.content[0].text : ''
   let extracted: Record<string, string | null> = {}
   try {
     const match = text.match(/\{[\s\S]*\}/)
     if (match) extracted = JSON.parse(match[0])
-  } catch { return NextResponse.json({ skipped: true, reason: '抽出失敗' }) }
+  } catch {
+    return NextResponse.json({ skipped: true, reason: '抽出失敗（JSONパースエラー）' })
+  }
 
-  // 全項目nullなら保存しない
-  const hasContent = Object.values(extracted).some(v => v !== null && v !== '')
-  if (!hasContent) return NextResponse.json({ skipped: true, reason: '抽出内容なし' })
+  const hasContent = Object.values(extracted).some(v => v !== null && String(v).trim() !== '')
+  if (!hasContent) return NextResponse.json({ skipped: true, reason: '関連する取り決めが見つかりませんでした' })
 
-  // holding_rules に保存（upsert）
   const { data, error } = await adminSupabase
     .from('holding_rules')
     .upsert({
@@ -98,5 +121,5 @@ ${chatText}
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ saved: true, rule: data, sessionCount: relevant.length })
+  return NextResponse.json({ saved: true, rule: data, sessionCount: targetSessions.length })
 }
