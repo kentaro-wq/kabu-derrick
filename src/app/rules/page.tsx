@@ -50,9 +50,35 @@ export default function RulesPage() {
       fetch('/api/holdings').then(r => r.json()),
       fetch('/api/holding-rules').then(r => r.json()),
     ]).then(([h, r]) => {
-      setHoldings(Array.isArray(h) ? h : [])
-      setRules(Array.isArray(r) ? r : [])
+      const holdingList: Holding[] = Array.isArray(h) ? h : []
+      const ruleList: HoldingRule[] = Array.isArray(r) ? r : []
+      setHoldings(holdingList)
+      setRules(ruleList)
       setLoading(false)
+
+      // ルール未設定の銘柄があればバックグラウンドで自動抽出
+      const ruleSet = new Set(ruleList.map(rule => rule.ticker))
+      const noRule = holdingList.filter(holding => !ruleSet.has(holding.ticker))
+      if (noRule.length > 0) {
+        Promise.all(
+          noRule.map(holding =>
+            fetch('/api/holding-rules/extract', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ticker: holding.ticker, name: holding.name }),
+            }).then(res => res.json())
+          )
+        ).then(results => {
+          const saved = results.filter(res => res.saved).map(res => res.rule)
+          if (saved.length > 0) {
+            setRules(prev => {
+              const existing = new Map(prev.map(rule => [rule.ticker, rule]))
+              saved.forEach(rule => existing.set(rule.ticker, rule))
+              return Array.from(existing.values())
+            })
+          }
+        }).catch(() => {})
+      }
     })
   }, [])
 
