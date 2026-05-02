@@ -32,6 +32,7 @@ export default function Dashboard() {
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [tsumitate, setTsumitate] = useState<{ name: string; monthly_amount: number }[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -39,10 +40,12 @@ export default function Dashboard() {
       fetch('/api/holdings').then(r => r.json()),
       fetch('/api/orders').then(r => r.json()),
       fetch('/api/profile').then(r => r.json()),
-    ]).then(([h, o, p]) => {
+      fetch('/api/tsumitate').then(r => r.json()).catch(() => ({ settings: [] })),
+    ]).then(([h, o, p, t]) => {
       setHoldings(Array.isArray(h) ? h : [])
       setOrders(Array.isArray(o) ? o : [])
       setProfile(p?.id ? p : null)
+      setTsumitate(Array.isArray(t?.settings) ? t.settings : [])
       setLoading(false)
     })
   }, [])
@@ -153,9 +156,33 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* NISA積立 */}
+      {tsumitate.length > 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 16, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>NISA積立（月次）</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {tsumitate.map((t, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 13, color: 'var(--text)' }}>{t.name}</span>
+                <span style={{ fontSize: 14, fontWeight: 600, color: '#34d399' }}>月 {t.monthly_amount.toLocaleString()}円</span>
+              </div>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>合計</span>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>月 {tsumitate.reduce((s, t) => s + t.monthly_amount, 0).toLocaleString()}円</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 保有銘柄 */}
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', marginBottom: 10 }}>保有銘柄</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)' }}>保有銘柄</div>
+          <a href="/portfolio/update" style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none', padding: '4px 10px', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 99 }}>
+            📷 更新
+          </a>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {holdings.map(h => (
             <div key={h.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 }}>

@@ -348,8 +348,8 @@ export default function ChatPage() {
   return (
     <div style={{ maxWidth: 520, margin: '0 auto', display: 'flex', flexDirection: 'column', height: '100dvh' }}>
       {/* ヘッダー */}
-      <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Link href="/" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 20 }}>←</Link>
             <div>
@@ -365,7 +365,7 @@ export default function ChatPage() {
           </div>
         </div>
         {/* 投資方針パネル */}
-        <div style={{ marginBottom: 8 }}>
+        <div style={{ marginBottom: 6 }}>
           <button onClick={() => { setShowPolicy(!showPolicy); setEditingPolicy(false) }} style={{
             width: '100%', textAlign: 'left', background: 'rgba(99,102,241,0.08)',
             border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8,
@@ -431,17 +431,17 @@ export default function ChatPage() {
 
         <div style={{ display: 'flex', gap: 6 }}>
           {([
-            { id: 'main', label: '💬 メイン相談', desc: '継続的な対話' },
-            { id: 'roundtable', label: '🔄 円卓議論', desc: '4AI討論→統合' },
+            { id: 'main', label: '💬 メイン' },
+            { id: 'roundtable', label: '🔄 円卓' },
           ] as const).map(m => (
             <button key={m.id} onClick={() => { setMode(m.id); clearChat() }} style={{
-              flex: 1, padding: '8px 10px', borderRadius: 10, cursor: 'pointer', textAlign: 'center',
+              flex: 1, padding: '6px 10px', borderRadius: 8, cursor: 'pointer', textAlign: 'center',
               border: `1px solid ${mode === m.id ? 'var(--accent)' : 'var(--border)'}`,
               background: mode === m.id ? 'rgba(99,102,241,0.15)' : 'var(--surface2)',
               color: mode === m.id ? 'var(--accent)' : 'var(--muted)',
+              fontSize: 12, fontWeight: 600,
             }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>{m.label}</div>
-              <div style={{ fontSize: 10, marginTop: 2, opacity: 0.7 }}>{m.desc}</div>
+              {m.label}
             </button>
           ))}
         </div>
