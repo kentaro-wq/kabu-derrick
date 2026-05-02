@@ -5,7 +5,15 @@ import { sendLineMessage } from '@/lib/line'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-export async function POST() {
+type CustomRule = { label: string; value: string }
+
+export async function POST(req: Request) {
+  // pg_cron や prices ルートからの内部呼び出しのみ許可
+  const authHeader = req.headers.get('authorization')
+  if (authHeader !== `Bearer ${process.env.APP_SECRET}`) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  }
+
   const [rulesRes, holdingsRes, profileRes] = await Promise.all([
     adminSupabase.from('holding_rules').select('*').eq('is_active', true),
     adminSupabase.from('holdings').select('*'),
@@ -20,38 +28,73 @@ export async function POST() {
     return NextResponse.json({ triggered: [], message: 'ルールなし' })
   }
 
-  // 現在の銘柄データとルールを突き合わせる評価テキストを構成
   const holdingMap = new Map(holdings.map(h => [h.ticker, h]))
 
+  // ─── ポートフォリオ全体の健全性チェック ─────────────────────────────────
+  const totalCost = holdings.reduce((s, h) => s + (h.purchase_price ?? 0) * (h.quantity ?? 0), 0)
+  const totalEval = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
+  const totalGain = holdings.reduce((s, h) => s + (h.unrealized_gain ?? 0), 0)
+  const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0
+
+  const portfolioAlerts: string[] = []
+
+  // 全体含み損アラート
+  if (totalGainPct <= -20) {
+    portfolioAlerts.push(`🚨 ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%に達しています。損切りルールを確認してください。`)
+  } else if (totalGainPct <= -10) {
+    portfolioAlerts.push(`⚠️ ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%です。各銘柄のルールを見直してください。`)
+  }
+
+  // 集中リスクチェック（1銘柄が評価額全体の30%超）
+  if (totalEval > 0) {
+    holdings.forEach(h => {
+      const share = (h.evaluation_amount ?? 0) / totalEval * 100
+      if (share >= 40) {
+        portfolioAlerts.push(`🔴 集中リスク: ${h.name}が全体の${share.toFixed(0)}%を占めています（推奨: 30%以下）`)
+      } else if (share >= 30) {
+        portfolioAlerts.push(`⚠️ 集中注意: ${h.name}が全体の${share.toFixed(0)}%を占めています`)
+      }
+    })
+  }
+
+  // ─── 個別銘柄ルールの評価テキスト構成 ────────────────────────────────────
   const ruleTexts = rules.map(r => {
     const h = holdingMap.get(r.ticker)
     const status = h
       ? `現在株価: ${h.current_price?.toLocaleString() ?? '不明'}円 / 評価額: ${h.evaluation_amount?.toLocaleString() ?? '不明'}円 / 含み損益: ${h.unrealized_gain != null ? (h.unrealized_gain >= 0 ? '+' : '') + h.unrealized_gain.toLocaleString() + '円' : '不明'} (${h.unrealized_gain_pct != null ? (h.unrealized_gain_pct >= 0 ? '+' : '') + h.unrealized_gain_pct.toFixed(2) + '%' : '不明'})`
       : '（保有データなし）'
 
+    // custom_rules を文字列化してプロンプトに含める
+    const customRulesText = Array.isArray(r.custom_rules) && r.custom_rules.length > 0
+      ? '\nカスタムルール: ' + (r.custom_rules as CustomRule[])
+          .map(cr => `${cr.label}: ${cr.value}`)
+          .join(' / ')
+      : ''
+
     return `【${r.name}（${r.ticker}）】
 現況: ${status}
 購入目的: ${r.purpose ?? '未設定'}
 売却条件: ${r.sell_conditions ?? '未設定'}
 期限付きルール: ${r.timeline_notes ?? '未設定'}
-配当メモ: ${r.dividend_notes ?? '未設定'}`
+配当メモ: ${r.dividend_notes ?? '未設定'}${customRulesText}`
   }).join('\n\n')
 
   const today = new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })
 
   const msg = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 800,
+    max_tokens: 1000,
     messages: [{
       role: 'user',
-      content: `今日は${today}です。以下の保有銘柄について、設定された売却条件・期限付きルールが現在の状況に照らして「アクション要」かどうかを機械的に判定してください。
+      content: `今日は${today}です。以下の保有銘柄について、設定された売却条件・期限付きルール・カスタムルールが現在の状況に照らして「アクション要」かどうかを機械的に判定してください。
 
 ${ruleTexts}
 
 判定ルール:
-- 売却条件や期限ルールに明確に合致するものだけ「アクション要」とする
-- 「株価が◯◯円を超えたら」「含み益が◯◯%を超えたら」等の数値条件は現況データと比較
+- 売却条件・期限ルール・カスタムルールに明確に合致するものだけ「アクション要」とする
+- 「株価が◯◯円を超えたら」「含み益が◯◯%を超えたら」「損切り-X%」等の数値条件は現況データと比較
 - 「◯◯年◯◯月までに」等の期限条件は今日の日付と比較
+- カスタムルールも同様に数値・条件を確認する
 - 条件が曖昧・未設定のものは「アクション不要」とする
 
 以下のJSON形式のみで返してください:
@@ -60,7 +103,7 @@ ${ruleTexts}
     { "ticker": "XXXX", "name": "銘柄名", "reason": "該当した条件と判断理由（50字以内）" }
   ],
   "summary": "全体的な一言コメント（60字以内）"
-}`
+}`,
     }],
   })
 
@@ -71,24 +114,42 @@ ${ruleTexts}
     if (match) result = JSON.parse(match[0])
   } catch { /* ignore */ }
 
-  // アクション要があればLINE通知
-  if (result.triggered.length > 0) {
-    const totalAssets = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
-      + (profile?.bank_balance ?? 0) + (profile?.dc_balance ?? 0)
+  // ─── LINE通知（個別銘柄アラート + ポートフォリオ全体警告） ─────────────
+  const hasIndividualAlert = result.triggered.length > 0
+  const hasPortfolioAlert = portfolioAlerts.length > 0
 
-    let lineMsg = `📣 マイ株デリック 銘柄ルール通知\n${today}\n\n`
-    lineMsg += `⚡ 以下の銘柄でアクションが必要です\n\n`
-    result.triggered.forEach(t => {
-      lineMsg += `▶ ${t.name}（${t.ticker}）\n${t.reason}\n\n`
-    })
-    lineMsg += `総資産 ${totalAssets.toLocaleString()}円\nアプリで確認 →`
+  if (hasIndividualAlert || hasPortfolioAlert) {
+    const totalAssets = totalEval + (profile?.bank_balance ?? 0) + (profile?.dc_balance ?? 0)
+    const gainSign = totalGain >= 0 ? '+' : ''
 
+    let lineMsg = `📣 マイ株デリック ルール通知\n${today}\n`
+    lineMsg += `総資産 ${totalAssets.toLocaleString()}円（損益 ${gainSign}${totalGain.toLocaleString()}円 / ${gainSign}${totalGainPct.toFixed(1)}%）\n`
+
+    if (hasPortfolioAlert) {
+      lineMsg += `\n【ポートフォリオ全体警告】\n`
+      portfolioAlerts.forEach(a => { lineMsg += `${a}\n` })
+    }
+
+    if (hasIndividualAlert) {
+      lineMsg += `\n【銘柄別アクション要】\n`
+      result.triggered.forEach(t => {
+        lineMsg += `▶ ${t.name}（${t.ticker}）\n${t.reason}\n\n`
+      })
+    }
+
+    lineMsg += `アプリで確認 →`
     await sendLineMessage(lineMsg)
   }
 
   return NextResponse.json({
     triggered: result.triggered,
+    portfolioAlerts,
     summary: result.summary,
+    portfolioStats: {
+      totalGainPct: Math.round(totalGainPct * 100) / 100,
+      totalGain,
+      totalEval,
+    },
     checkedAt: new Date().toISOString(),
   })
 }

@@ -70,15 +70,23 @@ export async function POST() {
   const updated = results.filter(r => r.updated).length
   const failed = results.filter(r => !r.updated).map(r => r.ticker)
 
-  // 株価更新後にルールチェックを実行
+  // 株価更新後にルールチェックと市場暴落チェックを並行実行
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
-  const checkRes = await fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' })
-  const checkData = await checkRes.json().catch(() => ({}))
+  const authHeader = { Authorization: `Bearer ${process.env.APP_SECRET}` }
+  const [checkRes, marketRes] = await Promise.all([
+    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST', headers: authHeader }),
+    fetch(`${baseUrl}/api/market/check`, { method: 'POST', headers: authHeader }),
+  ])
+  const [checkData, marketData] = await Promise.all([
+    checkRes.json().catch(() => ({})),
+    marketRes.json().catch(() => ({})),
+  ])
 
   return NextResponse.json({
     updated,
     failed,
     results: results.map(r => ({ ticker: r.ticker, name: r.name, price: r.price })),
     ruleCheck: checkData,
+    marketCheck: marketData,
   })
 }
