@@ -458,42 +458,43 @@ export default function ChatPage() {
             const subCount = msg.subMessages?.length ?? 0
             return (
               <div key={i} ref={aiRef} style={{ marginBottom: 16 }}>
-                {/* 統合まとめ */}
+                {/* 円卓の議論トグル（先頭） */}
+                {subCount > 0 && (
+                  <>
+                    <button onClick={() => toggleRoundtable(i)} style={{
+                      marginBottom: 6, fontSize: 11, color: 'var(--muted)', background: 'none',
+                      border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+                    }}>
+                      {expanded ? '▲ 円卓の議論を閉じる' : `▶ 円卓の議論を見る（${subCount}件）`}
+                    </button>
+                    {expanded && msg.subMessages && (
+                      <div style={{ marginBottom: 10, paddingLeft: 8, borderLeft: '2px solid var(--border)' }}>
+                        {msg.subMessages.map((sub, j) => {
+                          const isReply = sub.persona.endsWith('_reply')
+                          const personaId = isReply ? sub.persona.replace('_reply', '') : sub.persona
+                          const persona = PERSONAS.find(p => p.id === personaId) ?? PERSONAS[0]
+                          return (
+                            <div key={j} style={{ marginBottom: 10 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                <span style={{ fontSize: 12 }}>{persona.emoji}</span>
+                                <span style={{ fontSize: 10, fontWeight: 600, color: persona.color }}>{persona.label}</span>
+                                {isReply && <span style={{ fontSize: 9, color: 'var(--muted)', fontStyle: 'italic' }}>他の意見を受けて</span>}
+                              </div>
+                              <div style={{ background: 'var(--surface2)', border: `1px solid ${persona.color}22`, borderRadius: 8, padding: '8px 10px', fontSize: 12, lineHeight: 1.6, color: 'var(--text)' }}>
+                                {renderMarkdown(sub.content)}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+                {/* 統合まとめ（後） */}
                 <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 6, fontWeight: 600 }}>🔮 円卓 統合まとめ → 投資アドバイザー</div>
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
                   {renderMarkdown(msg.content)}
                 </div>
-                {/* 円卓の議論トグル */}
-                {subCount > 0 && (
-                  <button onClick={() => toggleRoundtable(i)} style={{
-                    marginTop: 6, fontSize: 11, color: 'var(--muted)', background: 'none',
-                    border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
-                  }}>
-                    {expanded ? '▲ 円卓の議論を閉じる' : `▶ 円卓の議論を見る（${subCount}件）`}
-                  </button>
-                )}
-                {/* 折りたたみ内容 */}
-                {expanded && msg.subMessages && (
-                  <div style={{ marginTop: 8, paddingLeft: 8, borderLeft: '2px solid var(--border)' }}>
-                    {msg.subMessages.map((sub, j) => {
-                      const isReply = sub.persona.endsWith('_reply')
-                      const personaId = isReply ? sub.persona.replace('_reply', '') : sub.persona
-                      const persona = PERSONAS.find(p => p.id === personaId) ?? PERSONAS[0]
-                      return (
-                        <div key={j} style={{ marginBottom: 10 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                            <span style={{ fontSize: 12 }}>{persona.emoji}</span>
-                            <span style={{ fontSize: 10, fontWeight: 600, color: persona.color }}>{persona.label}</span>
-                            {isReply && <span style={{ fontSize: 9, color: 'var(--muted)', fontStyle: 'italic' }}>他の意見を受けて</span>}
-                          </div>
-                          <div style={{ background: 'var(--surface2)', border: `1px solid ${persona.color}22`, borderRadius: 8, padding: '8px 10px', fontSize: 12, lineHeight: 1.6, color: 'var(--text)' }}>
-                            {renderMarkdown(sub.content)}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
               </div>
             )
           }
