@@ -94,9 +94,12 @@ export default function ChatPage() {
   const [expandedRoundtables, setExpandedRoundtables] = useState<Set<number>>(new Set())
   const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS)
   const [policy, setPolicy] = useState<string>('')
+  const [policyHistory, setPolicyHistory] = useState<{ id: string; content: string; updated_at: string }[]>([])
   const [showPolicy, setShowPolicy] = useState(false)
   const [editingPolicy, setEditingPolicy] = useState(false)
   const [policyDraft, setPolicyDraft] = useState('')
+  const [generatingPolicy, setGeneratingPolicy] = useState(false)
+  const [showPolicyHistory, setShowPolicyHistory] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastAiMsgRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -122,9 +125,10 @@ export default function ChatPage() {
       if (d.suggestions?.length > 0) setSuggestions(d.suggestions)
     }).catch(() => {})
     fetch('/api/policy').then(r => r.json()).then(d => {
-      const content = d.policy?.content ?? ''
+      const content = d.current?.content ?? ''
       setPolicy(content)
       setPolicyDraft(content)
+      setPolicyHistory(d.history ?? [])
     }).catch(() => {})
   }, [])
 
@@ -311,8 +315,22 @@ export default function ChatPage() {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: policyDraft }),
     })
+    if (policy) setPolicyHistory(prev => [{ id: Date.now().toString(), content: policy, updated_at: new Date().toISOString() }, ...prev])
     setPolicy(policyDraft)
     setEditingPolicy(false)
+  }
+
+  const generatePolicy = async () => {
+    setGeneratingPolicy(true)
+    setEditingPolicy(true)
+    try {
+      const res = await fetch('/api/policy/generate', { method: 'POST' })
+      const data = await res.json()
+      setPolicyDraft(data.content)
+    } catch {
+      setPolicyDraft('生成に失敗しました。再度お試しください。')
+    }
+    setGeneratingPolicy(false)
   }
 
   const clearChat = () => { setMessages([]); setInput(''); setSessionId(null) }
@@ -363,23 +381,48 @@ export default function ChatPage() {
             <div style={{ marginTop: 4, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
               {editingPolicy ? (
                 <>
+                  {generatingPolicy && <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>⏳ 過去の相談から方針を生成中...</div>}
                   <textarea
                     value={policyDraft}
                     onChange={e => setPolicyDraft(e.target.value)}
-                    rows={4}
+                    rows={5}
                     style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px', color: 'var(--text)', fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.6, boxSizing: 'border-box' }}
                   />
                   <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                    <button onClick={savePolicy} style={{ flex: 1, padding: '6px', background: 'var(--accent)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>保存</button>
+                    <button onClick={savePolicy} disabled={generatingPolicy} style={{ flex: 1, padding: '6px', background: 'var(--accent)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>保存</button>
                     <button onClick={() => { setEditingPolicy(false); setPolicyDraft(policy) }} style={{ padding: '6px 10px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 12, cursor: 'pointer' }}>キャンセル</button>
                   </div>
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: 8 }}>
                     {policy && !policy.includes('まだ方針') ? policy : '（未設定）'}
                   </div>
-                  <button onClick={() => { setEditingPolicy(true); setPolicyDraft(policy) }} style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}>✏️ 編集</button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={generatePolicy} style={{ fontSize: 11, color: '#f59e0b', background: 'none', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}>🔄 AI生成</button>
+                    <button onClick={() => { setEditingPolicy(true); setPolicyDraft(policy) }} style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}>✏️ 手動編集</button>
+                  </div>
+
+                  {/* 過去の方針履歴 */}
+                  {policyHistory.filter(h => !h.content.includes('まだ方針')).length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <button onClick={() => setShowPolicyHistory(!showPolicyHistory)} style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                        {showPolicyHistory ? '▲ 過去の方針を閉じる' : `▶ 過去の方針（${policyHistory.filter(h => !h.content.includes('まだ方針')).length}件）`}
+                      </button>
+                      {showPolicyHistory && (
+                        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {policyHistory.filter(h => !h.content.includes('まだ方針')).map(h => (
+                            <div key={h.id} style={{ padding: '8px 10px', background: 'var(--surface2)', borderRadius: 6, borderLeft: '2px solid var(--border)' }}>
+                              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>
+                                {new Date(h.updated_at).toLocaleDateString('ja-JP')}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{h.content}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
