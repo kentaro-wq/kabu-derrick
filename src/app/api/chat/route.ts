@@ -140,13 +140,31 @@ export async function POST(req: Request) {
   }
 
   if (mode === 'round2' && round1) {
-    // 4人の中で最も意見が分かれた組み合わせを1つ選んでコメントさせる
     const othersText = round1.map((r: { label: string; content: string }) => `【${r.label}の意見】\n${r.content}`).join('\n\n')
     const extraContext = `\n他のAIの意見:\n${othersText}\n\n上記の意見を読んだうえで、あなたの立場から補足・反論・同意を述べてください。`
     const contrarianResponse = await askPersona('contrarian', question, context, extraContext)
     return NextResponse.json({
       responses: [{ persona: 'contrarian', label: PERSONAS.contrarian.label, content: contrarianResponse }],
     })
+  }
+
+  if (mode === 'synthesis' && round1 && body.round2) {
+    const allOpinions = [
+      ...round1.map((r: { label: string; content: string }) => `【${r.label}（初回）】\n${r.content}`),
+      ...body.round2.map((r: { label: string; content: string }) => `【${r.label}（再考）】\n${r.content}`),
+    ].join('\n\n')
+
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      system: MAIN_SYSTEM,
+      messages: [{
+        role: 'user',
+        content: `${context}\n\n質問: ${question}\n\n【円卓での議論】\n${allOpinions}\n\n以上の議論を踏まえて、山田さんへの統合見解・具体的な結論をまとめてください。どの意見が重要か、何をすべきかを明確に示してください。`,
+      }],
+    })
+    const content = msg.content[0].type === 'text' ? msg.content[0].text : ''
+    return NextResponse.json({ content })
   }
 
   return NextResponse.json({ error: 'invalid mode' }, { status: 400 })
