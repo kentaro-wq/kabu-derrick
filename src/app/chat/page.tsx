@@ -72,10 +72,10 @@ const PERSONAS = [
 ]
 
 const DEFAULT_SUGGESTIONS = [
-  'NTTの指値、このまま維持すべきか？期限6/16まであと46日。',
   'NISA成長枠の残り136万円、何に投資するのがよいか？',
   '川崎重工と東京海上、どちらを優先的に買い増すべきか？',
   '今の円安傾向はポートフォリオにどう影響する？',
+  'eMAXIS Slim 先進国とオルカンの積立比率、このままでいいか？',
 ]
 
 export default function ChatPage() {
