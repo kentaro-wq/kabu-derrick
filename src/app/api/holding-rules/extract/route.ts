@@ -6,15 +6,16 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // 銘柄名から検索キーワードを生成（前方一致用）
 function nameKeywords(name: string): string[] {
-  // 「川崎重工業」→「川崎重工」のように末尾の業・株・HD等を除いた前方4〜6文字も含める
   const cleaned = name
-    .replace(/（.*?）|\(.*?\)/g, '') // カッコ内を除去
-    .replace(/(株式会社|ホールディングス|インデックス|ファンド|スリム).*$/g, '')
+    .replace(/（.*?）|\(.*?\)/g, '')
+    .replace(/\s*(HD|ホールディングス|Holdings|株式会社|インデックス|ファンド|スリム|グループ|コーポレーション|Corp\.?|Inc\.?).*$/gi, '')
     .trim()
   const keywords: string[] = [name]
   if (cleaned !== name) keywords.push(cleaned)
-  // 先頭4文字以上なら前方部分も追加
+  // 先頭4〜6文字も追加（部分一致用）
   if (cleaned.length >= 4) keywords.push(cleaned.slice(0, Math.min(cleaned.length, 6)))
+  // さらに先頭3文字（短い略称対策）
+  if (cleaned.length >= 3) keywords.push(cleaned.slice(0, 3))
   return [...new Set(keywords)]
 }
 

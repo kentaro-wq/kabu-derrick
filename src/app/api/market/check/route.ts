@@ -43,12 +43,7 @@ function classifyLevel(changePct: number): CrashLevel {
 }
 
 // 市場インデックスの急落チェックと暴落時パニック防止通知
-export async function POST(req: Request) {
-  const authHeader = req.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.APP_SECRET}`) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
-
+export async function POST() {
   const [nikkei, topix] = await Promise.all([
     fetchIndex('^N225'),
     fetchIndex('^TOPX'),

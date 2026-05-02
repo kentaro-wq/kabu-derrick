@@ -20,12 +20,20 @@ export async function POST(req: Request) {
   const policy = policyRes.data?.content ?? '（未設定）'
   const profile = profileRes.data
 
-  // 関連セッションを抽出（銘柄名・ticker含む、なければ直近3件）
+  // 関連セッションを抽出（銘柄名の複数キーワードで検索）
   const allSessions = allSessionsRes.data ?? []
+  const cleaned = name
+    .replace(/（.*?）|\(.*?\)/g, '')
+    .replace(/\s*(HD|ホールディングス|Holdings|株式会社|インデックス|ファンド|スリム|グループ).*$/gi, '')
+    .trim()
+  const searchKeywords = [...new Set([
+    name, cleaned,
+    cleaned.length >= 4 ? cleaned.slice(0, 6) : null,
+    cleaned.length >= 3 ? cleaned.slice(0, 3) : null,
+  ].filter(Boolean) as string[])]
   const relevant = allSessions.filter(s => {
     const text = JSON.stringify(s.messages ?? []) + (s.title ?? '')
-    const kw = name.replace(/（.*?）|\(.*?\)/g, '').replace(/(株式会社|HD|ホールディングス).*$/, '').slice(0, 6)
-    return text.includes(kw) || text.includes(ticker)
+    return searchKeywords.some(kw => text.includes(kw)) || text.includes(ticker)
   })
   const targetSessions = (relevant.length > 0 ? relevant : allSessions).slice(0, 3)
 

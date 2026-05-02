@@ -46,8 +46,7 @@ export async function PUT(req: Request) {
       )
     )
     // 全銘柄のルールチェックも実行
-    const authHeaders = { Authorization: `Bearer ${process.env.APP_SECRET}` }
-    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST', headers: authHeaders }).catch(() => {})
+    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
   })()
 
   return NextResponse.json(data)

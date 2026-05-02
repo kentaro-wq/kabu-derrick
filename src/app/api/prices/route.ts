@@ -45,23 +45,28 @@ export async function POST() {
       const price = await fetchPrice(h.ticker)
       if (price == null) return { ticker: h.ticker, name: h.name, price: null, updated: false }
 
-      // 含み損益を再計算
-      const qty = h.quantity ?? 0
-      const purchasePrice = h.purchase_price ?? 0
-      const evaluationAmount = price * qty
-      const unrealizedGain = purchasePrice > 0 ? evaluationAmount - purchasePrice * qty : null
-      const unrealizedGainPct = purchasePrice > 0 ? ((price - purchasePrice) / purchasePrice) * 100 : null
-
-      await adminSupabase
-        .from('holdings')
-        .update({
-          current_price: price,
-          evaluation_amount: evaluationAmount,
-          unrealized_gain: unrealizedGain,
-          unrealized_gain_pct: unrealizedGainPct,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', h.id)
+      // quantity が null の場合は current_price のみ更新（0 で上書きしない）
+      if (h.quantity == null) {
+        await adminSupabase
+          .from('holdings')
+          .update({ current_price: price, updated_at: new Date().toISOString() })
+          .eq('id', h.id)
+      } else {
+        const purchasePrice = h.purchase_price ?? 0
+        const evaluationAmount = price * h.quantity
+        const unrealizedGain = purchasePrice > 0 ? evaluationAmount - purchasePrice * h.quantity : null
+        const unrealizedGainPct = purchasePrice > 0 ? ((price - purchasePrice) / purchasePrice) * 100 : null
+        await adminSupabase
+          .from('holdings')
+          .update({
+            current_price: price,
+            evaluation_amount: evaluationAmount,
+            unrealized_gain: unrealizedGain,
+            unrealized_gain_pct: unrealizedGainPct,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', h.id)
+      }
 
       return { ticker: h.ticker, name: h.name, price, updated: true }
     })
@@ -72,10 +77,9 @@ export async function POST() {
 
   // 株価更新後にルールチェックと市場暴落チェックを並行実行
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
-  const authHeader = { Authorization: `Bearer ${process.env.APP_SECRET}` }
   const [checkRes, marketRes] = await Promise.all([
-    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST', headers: authHeader }),
-    fetch(`${baseUrl}/api/market/check`, { method: 'POST', headers: authHeader }),
+    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }),
+    fetch(`${baseUrl}/api/market/check`, { method: 'POST' }),
   ])
   const [checkData, marketData] = await Promise.all([
     checkRes.json().catch(() => ({})),

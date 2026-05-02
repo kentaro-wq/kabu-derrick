@@ -7,13 +7,7 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 type CustomRule = { label: string; value: string }
 
-export async function POST(req: Request) {
-  // pg_cron や prices ルートからの内部呼び出しのみ許可
-  const authHeader = req.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.APP_SECRET}`) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
-
+export async function POST() {
   const [rulesRes, holdingsRes, profileRes] = await Promise.all([
     adminSupabase.from('holding_rules').select('*').eq('is_active', true),
     adminSupabase.from('holdings').select('*'),
