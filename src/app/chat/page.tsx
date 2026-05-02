@@ -71,7 +71,7 @@ const PERSONAS = [
   { id: 'longterm', label: '長期思考家', emoji: '🌲', color: '#a78bfa' },
 ]
 
-const SUGGESTIONS = [
+const DEFAULT_SUGGESTIONS = [
   'NTTの指値、このまま維持すべきか？期限6/16まであと46日。',
   'NISA成長枠の残り136万円、何に投資するのがよいか？',
   '川崎重工と東京海上、どちらを優先的に買い増すべきか？',
@@ -92,6 +92,11 @@ export default function ChatPage() {
   const [imageType, setImageType] = useState<string>('image/jpeg')
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [expandedRoundtables, setExpandedRoundtables] = useState<Set<number>>(new Set())
+  const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS)
+  const [policy, setPolicy] = useState<string>('')
+  const [showPolicy, setShowPolicy] = useState(false)
+  const [editingPolicy, setEditingPolicy] = useState(false)
+  const [policyDraft, setPolicyDraft] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -99,6 +104,18 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  useEffect(() => {
+    // 質問案とポリシーを並行取得
+    fetch('/api/suggestions').then(r => r.json()).then(d => {
+      if (d.suggestions?.length > 0) setSuggestions(d.suggestions)
+    }).catch(() => {})
+    fetch('/api/policy').then(r => r.json()).then(d => {
+      const content = d.policy?.content ?? ''
+      setPolicy(content)
+      setPolicyDraft(content)
+    }).catch(() => {})
+  }, [])
 
   const saveSession = useCallback(async (msgs: Message[], sid: string | null, firstQuestion: string) => {
     const body = sid
@@ -278,6 +295,15 @@ export default function ChatPage() {
     setLoadingText('')
   }
 
+  const savePolicy = async () => {
+    await fetch('/api/policy', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: policyDraft }),
+    })
+    setPolicy(policyDraft)
+    setEditingPolicy(false)
+  }
+
   const clearChat = () => { setMessages([]); setInput(''); setSessionId(null) }
 
   const toggleRoundtable = (idx: number) => {
@@ -307,6 +333,46 @@ export default function ChatPage() {
             )}
           </div>
         </div>
+        {/* 投資方針パネル */}
+        <div style={{ marginBottom: 8 }}>
+          <button onClick={() => { setShowPolicy(!showPolicy); setEditingPolicy(false) }} style={{
+            width: '100%', textAlign: 'left', background: 'rgba(99,102,241,0.08)',
+            border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8,
+            padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <span style={{ fontSize: 12 }}>🧭</span>
+            <span style={{ flex: 1, fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {policy && !policy.includes('まだ方針') ? policy.split('\n')[0] : '投資方針を設定する'}
+            </span>
+            <span style={{ fontSize: 10, color: 'var(--muted)' }}>{showPolicy ? '▲' : '▼'}</span>
+          </button>
+          {showPolicy && (
+            <div style={{ marginTop: 4, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+              {editingPolicy ? (
+                <>
+                  <textarea
+                    value={policyDraft}
+                    onChange={e => setPolicyDraft(e.target.value)}
+                    rows={4}
+                    style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px', color: 'var(--text)', fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.6, boxSizing: 'border-box' }}
+                  />
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button onClick={savePolicy} style={{ flex: 1, padding: '6px', background: 'var(--accent)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>保存</button>
+                    <button onClick={() => { setEditingPolicy(false); setPolicyDraft(policy) }} style={{ padding: '6px 10px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 12, cursor: 'pointer' }}>キャンセル</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
+                    {policy && !policy.includes('まだ方針') ? policy : '（未設定）'}
+                  </div>
+                  <button onClick={() => { setEditingPolicy(true); setPolicyDraft(policy) }} style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}>✏️ 編集</button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={{ display: 'flex', gap: 6 }}>
           {([
             { id: 'main', label: '💬 メイン相談', desc: '継続的な対話' },
@@ -337,7 +403,7 @@ export default function ChatPage() {
               {mode === 'main' ? 'メイン相談中に🔄ボタンで円卓にも投げられます' : '円卓終了後は自動でメイン相談に移行します'}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {SUGGESTIONS.map(q => (
+              {suggestions.map(q => (
                 <button key={q} onClick={() => setInput(q)} style={{
                   background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
                   padding: '10px 14px', color: 'var(--text)', fontSize: 13, cursor: 'pointer', textAlign: 'left', lineHeight: 1.5

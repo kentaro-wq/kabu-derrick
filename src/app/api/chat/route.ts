@@ -32,25 +32,43 @@ const PERSONAS = {
 }
 
 async function getPortfolioContext(): Promise<string> {
-  const [holdingsRes, ordersRes] = await Promise.all([
+  const [holdingsRes, ordersRes, tsumitateRes, policyRes] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
     adminSupabase.from('orders').select('*').eq('status', 'active'),
+    adminSupabase.from('tsumitate_settings').select('*'),
+    adminSupabase.from('investment_policy').select('content').limit(1).single(),
   ])
   const holdings = holdingsRes.data ?? []
   const orders = ordersRes.data ?? []
+  const tsumitate = tsumitateRes.data ?? []
+  const policy = policyRes.data?.content ?? ''
   const total = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
+  const tsumitateTotal = tsumitate.reduce((s: number, t: { monthly_amount: number }) => s + t.monthly_amount, 0)
 
   let ctx = `【ユーザーの現在の状況】\n`
   ctx += `・生年: 1975年（50歳）、子ども: 小4\n`
   ctx += `・投資目標: 15年後（65歳時）にDC別で3,000万円\n`
   ctx += `・投資経験: インデックス積立は長年のベテラン、個別株は2026年から始めたばかり\n`
   ctx += `・銀行預金: 約970万円（投資可能額: 約670万円）\n\n`
+
+  if (policy && !policy.includes('まだ方針')) {
+    ctx += `【現在の投資方針】\n${policy}\n\n`
+  }
+
   ctx += `【保有銘柄（楽天証券、計約${Math.round(total / 10000)}万円）】\n`
   holdings.forEach(h => {
     ctx += `・${h.name}(${h.ticker}) ${h.account_type === 'tokutei' ? '特定口座' : 'NISA'}: `
     ctx += `評価額${h.evaluation_amount?.toLocaleString()}円 `
     ctx += `損益${h.unrealized_gain != null ? (h.unrealized_gain >= 0 ? '+' : '') + h.unrealized_gain?.toLocaleString() + '円' : '不明'}\n`
   })
+
+  if (tsumitate.length > 0) {
+    ctx += `\n【NISA積立設定（毎月${tsumitateTotal.toLocaleString()}円）】\n`
+    tsumitate.forEach((t: { name: string; monthly_amount: number }) => {
+      ctx += `・${t.name}: 月${t.monthly_amount.toLocaleString()}円\n`
+    })
+  }
+
   if (orders.length > 0) {
     ctx += `\n【執行中の注文】\n`
     orders.forEach(o => {
