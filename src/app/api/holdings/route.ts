@@ -25,9 +25,29 @@ export async function PUT(req: Request) {
   const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // ルールチェックをバックグラウンドで実行（結果は待たない）
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-  fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
+  // バックグラウンド: ルールチェック + 未設定銘柄のルール自動抽出
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
+  const savedHoldings = data as { ticker: string; name: string }[]
+  ;(async () => {
+    // 既存ルール一覧を取得して、ルール未設定の銘柄だけ抽出を試みる
+    const { data: existingRules } = await adminSupabase
+      .from('holding_rules')
+      .select('ticker')
+    const ruleSet = new Set((existingRules ?? []).map((r: { ticker: string }) => r.ticker))
+
+    const noRuleHoldings = savedHoldings.filter(h => !ruleSet.has(h.ticker))
+    await Promise.all(
+      noRuleHoldings.map(h =>
+        fetch(`${baseUrl}/api/holding-rules/extract`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticker: h.ticker, name: h.name }),
+        }).catch(() => {})
+      )
+    )
+    // 全銘柄のルールチェックも実行
+    fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
+  })()
 
   return NextResponse.json(data)
 }

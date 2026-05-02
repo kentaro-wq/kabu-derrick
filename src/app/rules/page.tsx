@@ -42,6 +42,8 @@ export default function RulesPage() {
   const [saving, setSaving] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
+  const [extracting, setExtracting] = useState<string | null>(null) // ticker
+  const [extractMsg, setExtractMsg] = useState<Record<string, string>>({})
 
   useEffect(() => {
     Promise.all([
@@ -93,6 +95,31 @@ export default function RulesPage() {
       setCheckResult({ triggered: [], summary: 'チェック失敗', checkedAt: new Date().toISOString() })
     }
     setChecking(false)
+  }
+
+  const extractFromChat = async (h: Holding, force = false) => {
+    setExtracting(h.ticker)
+    setExtractMsg(prev => ({ ...prev, [h.ticker]: '' }))
+    try {
+      const res = await fetch('/api/holding-rules/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: h.ticker, name: h.name, force }),
+      })
+      const data = await res.json()
+      if (data.saved) {
+        setRules(prev => {
+          const filtered = prev.filter(r => r.ticker !== data.rule.ticker)
+          return [...filtered, data.rule]
+        })
+        setExtractMsg(prev => ({ ...prev, [h.ticker]: `✅ ${data.sessionCount}件の会話から抽出しました` }))
+      } else {
+        setExtractMsg(prev => ({ ...prev, [h.ticker]: `— ${data.reason ?? '抽出できませんでした'}` }))
+      }
+    } catch {
+      setExtractMsg(prev => ({ ...prev, [h.ticker]: '⚠️ 抽出失敗' }))
+    }
+    setExtracting(null)
   }
 
   const hasRule = (ticker: string) => ruleMap.has(ticker) &&
@@ -186,11 +213,19 @@ export default function RulesPage() {
                     {h.unrealized_gain_pct != null && ` (${h.unrealized_gain_pct >= 0 ? '+' : ''}${h.unrealized_gain_pct.toFixed(2)}%)`}
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {ruleCount > 0
                     ? <span style={{ fontSize: 10, color: 'var(--accent)', background: 'rgba(99,102,241,0.15)', padding: '2px 8px', borderRadius: 99 }}>{ruleCount}項目設定済</span>
                     : <span style={{ fontSize: 10, color: 'var(--muted)' }}>未設定</span>
                   }
+                  <button
+                    onClick={e => { e.stopPropagation(); extractFromChat(h, ruleCount > 0) }}
+                    disabled={extracting === h.ticker}
+                    title="チャット履歴からルールを自動抽出"
+                    style={{ fontSize: 11, padding: '3px 7px', borderRadius: 6, border: '1px solid rgba(245,158,11,0.4)', background: 'none', color: '#f59e0b', cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    {extracting === h.ticker ? '⏳' : '📝'}
+                  </button>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{isEditing ? '▲' : '▼'}</span>
                 </div>
               </div>
@@ -229,6 +264,13 @@ export default function RulesPage() {
                       閉じる
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* 抽出結果メッセージ */}
+              {extractMsg[h.ticker] && (
+                <div style={{ padding: '6px 16px', fontSize: 11, color: extractMsg[h.ticker].startsWith('✅') ? 'var(--green)' : 'var(--muted)', borderTop: '1px solid var(--border)', background: 'var(--surface2)' }}>
+                  {extractMsg[h.ticker]}
                 </div>
               )}
 
