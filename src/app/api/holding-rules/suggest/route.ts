@@ -49,7 +49,7 @@ export async function POST(req: Request) {
     : ''
 
   const text = await geminiGenerate({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-1.5-flash',
     maxTokens: 1200,
     messages: [{
       role: 'user',
