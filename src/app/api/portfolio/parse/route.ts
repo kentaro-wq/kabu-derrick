@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   try {
     console.log('[parse] calling Gemini API')
     const text = await geminiGenerate({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-flash-latest',
       maxTokens: 1024,
       messages: [{
         role: 'user',
@@ -38,6 +38,12 @@ export async function POST(req: Request) {
 - 特定口座 → "tokutei"
 - DC・確定拠出 → "dc"
 
+資産種別のマッピング:
+- 国内株式 → "domestic_stock"
+- 外国株式 → "foreign_stock"
+- 投資信託 → "fund"
+- ETF → "etf"
+
 返却形式（JSONのみ、他のテキスト不要）:
 {
   "holdings": [
@@ -45,6 +51,7 @@ export async function POST(req: Request) {
       "name": "銘柄名",
       "ticker": "証券コード",
       "account_type": "口座種別",
+      "asset_type": "資産種別",
       "quantity": 保有株数またはnull,
       "current_price": 現在値またはnull,
       "purchase_price": 取得単価またはnull,
