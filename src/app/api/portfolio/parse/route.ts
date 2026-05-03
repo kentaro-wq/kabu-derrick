@@ -22,15 +22,19 @@ export async function POST(req: Request) {
   try {
     console.log('[parse] calling Gemini API')
     const text = await geminiGenerate({
-      model: 'gemini-2.5-flash-lite',
-      maxTokens: 1024,
+      model: 'gemini-2.5-flash',
+      maxTokens: 2048,
       messages: [{
         role: 'user',
         parts: [
           { inline_data: { mime_type: mediaType, data: imageData } },
           {
             text: `この画像は楽天証券の保有銘柄一覧または損益管理画面です。
-見えている各行を1件ずつ抽出してください。同じ銘柄名でも口座種別が異なる場合は別々の行として抽出してください。行数を減らしたり統合したりしないでください。
+
+【重要】画像に見えている行を1行1エントリとして、絶対に統合・省略せずに全て抽出してください。
+- 同じ銘柄名でも口座種別が違う行は必ず別エントリにしてください
+- 例: "eMAXIS Slim 先進国株式" が「NISAつみたて投資枠」と「特定口座」に別々にある場合、2エントリ返してください
+- 行数を減らすことは絶対に禁止です
 
 口座種別のマッピング:
 - NISA成長投資枠 → "nisa_growth"
