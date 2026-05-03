@@ -22,12 +22,16 @@ export async function PUT(req: Request) {
   const { holdings } = await req.json()
   await adminSupabase.from('holdings').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   const rows = holdings
-    .filter((h: Record<string, unknown>) => h.ticker && h.name)
-    .map((h: Record<string, unknown>) => ({
-      ...h,
-      asset_type: h.asset_type ?? (typeof h.ticker === 'string' && /^\d{4}$/.test(h.ticker) ? 'domestic_stock' : 'fund'),
-      updated_at: new Date().toISOString(),
-    }))
+    .filter((h: Record<string, unknown>) => h.name)
+    .map((h: Record<string, unknown>) => {
+      const ticker = h.ticker || String(h.name).replace(/[^\w]/g, '').slice(0, 12).toUpperCase() || 'UNKNOWN'
+      return {
+        ...h,
+        ticker,
+        asset_type: h.asset_type ?? (typeof ticker === 'string' && /^\d{4}$/.test(ticker) ? 'domestic_stock' : 'fund'),
+        updated_at: new Date().toISOString(),
+      }
+    })
   const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
   if (error) {
     console.error('[holdings PUT] insert error:', error.message, 'rows sample:', JSON.stringify(rows[0]))
