@@ -49,7 +49,7 @@ export default function PortfolioUpdatePage() {
       const img = new Image()
       img.onerror = () => setError('画像を読み込めませんでした。JPEG/PNG形式でお試しください。')
       img.onload = () => {
-        const maxPx = 800
+        const maxPx = 1600
         const scale = Math.min(1, maxPx / Math.max(img.width, img.height))
         const canvas = document.createElement('canvas')
         canvas.width = Math.round(img.width * scale)
@@ -57,7 +57,7 @@ export default function PortfolioUpdatePage() {
         const ctx = canvas.getContext('2d')
         if (!ctx) { setError('画像変換に失敗しました。'); return }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-        const compressed = canvas.toDataURL('image/jpeg', 0.6)
+        const compressed = canvas.toDataURL('image/jpeg', 0.85)
         setPreview(compressed)
         setImageData(compressed.split(',')[1])
         setError(null)
