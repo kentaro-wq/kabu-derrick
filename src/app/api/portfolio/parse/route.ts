@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   try {
     console.log('[parse] calling Gemini API')
     const text = await geminiGenerate({
-      model: 'gemini-2.0-flash-001',
+      model: 'gemini-2.5-flash-lite',
       maxTokens: 1024,
       messages: [{
         role: 'user',
