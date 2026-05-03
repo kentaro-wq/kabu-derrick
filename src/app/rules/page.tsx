@@ -43,13 +43,13 @@ export default function RulesPage() {
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [rules, setRules] = useState<HoldingRule[]>([])
   const [loading, setLoading] = useState(true)
-  const [editing, setEditing] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null) // holding id
   const [draft, setDraft] = useState<HoldingRule>(emptyRule('', ''))
   const [saving, setSaving] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
-  const [extracting, setExtracting] = useState<string | null>(null)
+  const [extracting, setExtracting] = useState<string | null>(null) // holding id
   const [extractMsg, setExtractMsg] = useState<Record<string, string>>({})
   const [fetchingPrices, setFetchingPrices] = useState(false)
   const [priceResult, setPriceResult] = useState<{ updated: number; failed: string[] } | null>(null)
@@ -98,7 +98,7 @@ export default function RulesPage() {
   const startEdit = (h: Holding) => {
     const existing = ruleMap.get(h.ticker)
     setDraft(existing ? normalizeRule(existing) : emptyRule(h.ticker, h.name))
-    setEditing(h.ticker)
+    setEditing(h.id)
   }
   const cancelEdit = () => { setEditing(null) }
 
@@ -140,8 +140,8 @@ export default function RulesPage() {
   }
 
   const extractFromChat = async (h: Holding, force = false) => {
-    setExtracting(h.ticker)
-    setExtractMsg(prev => ({ ...prev, [h.ticker]: '' }))
+    setExtracting(h.id)
+    setExtractMsg(prev => ({ ...prev, [h.id]: '' }))
     try {
       const res = await fetch('/api/holding-rules/extract', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -150,12 +150,12 @@ export default function RulesPage() {
       const data = await res.json()
       if (data.saved) {
         setRules(prev => { const m = new Map(prev.map(r => [r.ticker, r])); m.set(data.rule.ticker, normalizeRule(data.rule)); return Array.from(m.values()) })
-        setExtractMsg(prev => ({ ...prev, [h.ticker]: `✅ ${data.sessionCount}件の会話から抽出` }))
+        setExtractMsg(prev => ({ ...prev, [h.id]: `✅ ${data.sessionCount}件の会話から抽出` }))
       } else {
-        setExtractMsg(prev => ({ ...prev, [h.ticker]: `— ${data.reason ?? '抽出できませんでした'}` }))
+        setExtractMsg(prev => ({ ...prev, [h.id]: `— ${data.reason ?? '抽出できませんでした'}` }))
       }
     } catch {
-      setExtractMsg(prev => ({ ...prev, [h.ticker]: '⚠️ 抽出失敗' }))
+      setExtractMsg(prev => ({ ...prev, [h.id]: '⚠️ 抽出失敗' }))
     }
     setExtracting(null)
   }
@@ -262,12 +262,12 @@ export default function RulesPage() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {holdings.map(h => {
           const rule = ruleMap.get(h.ticker)
-          const isEditing = editing === h.ticker
+          const isEditing = editing === h.id
           const cnt = ruleCount(h.ticker)
           const triggered = checkResult?.triggered.some(t => t.ticker === h.ticker)
 
           return (
-            <div key={h.ticker} style={{ background: 'var(--surface)', border: `1px solid ${triggered ? '#ef444466' : 'var(--border)'}`, borderRadius: 14, overflow: 'hidden' }}>
+            <div key={h.id} style={{ background: 'var(--surface)', border: `1px solid ${triggered ? '#ef444466' : 'var(--border)'}`, borderRadius: 14, overflow: 'hidden' }}>
               {/* 銘柄ヘッダー */}
               <div onClick={() => isEditing ? cancelEdit() : startEdit(h)}
                 style={{ padding: '12px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -287,19 +287,19 @@ export default function RulesPage() {
                     ? <span style={{ fontSize: 10, color: 'var(--accent)', background: 'rgba(99,102,241,0.15)', padding: '2px 8px', borderRadius: 99 }}>{cnt}項目</span>
                     : <span style={{ fontSize: 10, color: 'var(--muted)' }}>未設定</span>
                   }
-                  <button onClick={e => { e.stopPropagation(); extractFromChat(h, cnt > 0) }} disabled={extracting === h.ticker}
+                  <button onClick={e => { e.stopPropagation(); extractFromChat(h, cnt > 0) }} disabled={extracting === h.id}
                     title="チャット履歴から抽出"
                     style={{ fontSize: 11, padding: '3px 7px', borderRadius: 6, border: '1px solid rgba(245,158,11,0.4)', background: 'none', color: '#f59e0b', cursor: 'pointer' }}>
-                    {extracting === h.ticker ? '⏳' : '📝'}
+                    {extracting === h.id ? '⏳' : '📝'}
                   </button>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{isEditing ? '▲' : '▼'}</span>
                 </div>
               </div>
 
               {/* 抽出メッセージ */}
-              {extractMsg[h.ticker] && (
-                <div style={{ padding: '5px 14px', fontSize: 11, color: extractMsg[h.ticker].startsWith('✅') ? 'var(--green)' : 'var(--muted)', borderTop: '1px solid var(--border)', background: 'var(--surface2)' }}>
-                  {extractMsg[h.ticker]}
+              {extractMsg[h.id] && (
+                <div style={{ padding: '5px 14px', fontSize: 11, color: extractMsg[h.id].startsWith('✅') ? 'var(--green)' : 'var(--muted)', borderTop: '1px solid var(--border)', background: 'var(--surface2)' }}>
+                  {extractMsg[h.id]}
                 </div>
               )}
 
