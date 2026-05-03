@@ -84,6 +84,15 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   const total = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
   const tsumitateTotal = tsumitate.reduce((s: number, t: { monthly_amount: number }) => s + t.monthly_amount, 0)
 
+  // 金額を「○○万円」表記に統一するヘルパー（AIが自力換算して桁を間違えるのを防ぐ）
+  const toMan = (yen: number) => `${Math.round(yen / 10000)}万円`
+
+  // インデックス投信と個別株の小計を事前計算
+  const indexHoldings = holdings.filter(h => !h.ticker || !/^\d{4}$/.test(h.ticker))
+  const stockHoldings = holdings.filter(h => h.ticker && /^\d{4}$/.test(h.ticker))
+  const indexTotal = indexHoldings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
+  const stockTotal = stockHoldings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
+
   let ctx = `【ユーザーの現在の状況】\n`
   ctx += `・生年: 1975年（50歳）、子ども: 小4\n`
   ctx += `・投資目標: 15年後（65歳時）にDC別で3,000万円\n`
@@ -94,12 +103,15 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
     ctx += `【現在の投資方針】\n${policy}\n\n`
   }
 
-  ctx += `【保有銘柄（楽天証券、計約${Math.round(total / 10000)}万円）― この価格は信頼できる最新データ】\n`
+  ctx += `【保有銘柄サマリー（※金額は全て万円単位・1億円には届かない規模）】\n`
+  ctx += `・合計: ${toMan(total)}（インデックス投信 ${toMan(indexTotal)} ＋ 個別株 ${toMan(stockTotal)}）\n\n`
+
+  ctx += `【保有銘柄明細（この価格は信頼できる最新データ）】\n`
   holdings.forEach(h => {
     const price = h.current_price != null ? `現在値${h.current_price.toLocaleString()}円` : '現在値不明'
-    ctx += `・${h.name}(${h.ticker}) ${h.account_type === 'tokutei' ? '特定口座' : 'NISA'}: `
-    ctx += `${price} 評価額${h.evaluation_amount?.toLocaleString() ?? '不明'}円 `
-    ctx += `損益${h.unrealized_gain != null ? (h.unrealized_gain >= 0 ? '+' : '') + h.unrealized_gain.toLocaleString() + '円' : '不明'}\n`
+    const evalMan = h.evaluation_amount != null ? `評価額${toMan(h.evaluation_amount)}` : '評価額不明'
+    const gain = h.unrealized_gain != null ? `損益${h.unrealized_gain >= 0 ? '+' : ''}${Math.round(h.unrealized_gain / 10000)}万円` : '損益不明'
+    ctx += `・${h.name}(${h.ticker ?? 'インデックス'}) ${h.account_type === 'tokutei' ? '特定口座' : 'NISA'}: ${price} ${evalMan} ${gain}\n`
   })
 
   // リアルタイム取得した株価（保有外の銘柄を含む）
