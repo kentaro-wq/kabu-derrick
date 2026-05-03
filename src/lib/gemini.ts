@@ -10,11 +10,13 @@ export async function geminiGenerate({
   system,
   messages,
   maxTokens = 1000,
+  timeoutMs = 25000,
 }: {
   model?: string
   system?: string
   messages: GeminiMessage[]
   maxTokens?: number
+  timeoutMs?: number
 }): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set')
@@ -33,7 +35,7 @@ export async function geminiGenerate({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(timeoutMs),
     }
   )
 

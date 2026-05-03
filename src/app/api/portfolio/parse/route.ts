@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { geminiGenerate } from '@/lib/gemini'
 
-export const runtime = 'edge'
+export const maxDuration = 60
 
 export async function POST(req: Request) {
   const { imageData, imageType } = await req.json()
@@ -22,8 +22,9 @@ export async function POST(req: Request) {
   try {
     console.log('[parse] calling Gemini API')
     const text = await geminiGenerate({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-2.5-flash',
       maxTokens: 2048,
+      timeoutMs: 50000,
       messages: [{
         role: 'user',
         parts: [
