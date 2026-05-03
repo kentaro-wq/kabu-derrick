@@ -80,10 +80,11 @@ export default function PortfolioUpdatePage() {
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       if (!data.holdings || data.holdings.length === 0) throw new Error('銘柄が検出できませんでした。楽天証券の保有一覧画面のスクショをお試しください。')
-      // tickerで重複排除して蓄積（後のスクショで上書き）
+      // name+account_typeで重複排除して蓄積（後のスクショで上書き）
       setAllParsed(prev => {
-        const map = new Map(prev.map(h => [h.ticker, h]))
-        for (const h of data.holdings) map.set(h.ticker, h)
+        const key = (h: ParsedHolding) => `${h.name}__${h.account_type}`
+        const map = new Map(prev.map(h => [key(h), h]))
+        for (const h of data.holdings) map.set(key(h), h)
         return Array.from(map.values())
       })
       setRoundCount(c => c + 1)
