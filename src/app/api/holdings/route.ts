@@ -27,7 +27,10 @@ export async function PUT(req: Request) {
     updated_at: new Date().toISOString(),
   }))
   const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[holdings PUT] insert error:', error.message, 'rows sample:', JSON.stringify(rows[0]))
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
 
   // バックグラウンド: ルールチェック + 未設定銘柄のルール自動抽出
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
