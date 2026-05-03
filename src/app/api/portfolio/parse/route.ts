@@ -30,7 +30,7 @@ export async function POST(req: Request) {
           { inline_data: { mime_type: mediaType, data: imageData } },
           {
             text: `この画像は楽天証券の保有銘柄一覧または損益管理画面です。
-見えている各銘柄の情報をJSONで抽出してください。
+見えている各行を1件ずつ抽出してください。同じ銘柄名でも口座種別が異なる場合は別々の行として抽出してください。行数を減らしたり統合したりしないでください。
 
 口座種別のマッピング:
 - NISA成長投資枠 → "nisa_growth"
