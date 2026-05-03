@@ -18,6 +18,7 @@ interface ParsedHolding {
 function accountLabel(type: string) {
   if (type === 'nisa_growth') return 'NISA成長'
   if (type === 'nisa_tsumitate') return 'つみたて'
+  if (type === 'old_tsumitate') return '旧つみたて'
   if (type === 'tokutei') return '特定'
   if (type === 'dc') return 'DC'
   return type

@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   try {
     console.log('[parse] calling Gemini API')
     const text = await geminiGenerate({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       maxTokens: 2048,
       messages: [{
         role: 'user',
@@ -33,12 +33,13 @@ export async function POST(req: Request) {
 
 【重要】画像に見えている行を1行1エントリとして、絶対に統合・省略せずに全て抽出してください。
 - 同じ銘柄名でも口座種別が違う行は必ず別エントリにしてください
-- 例: "eMAXIS Slim 先進国株式" が「NISAつみたて投資枠」と「特定口座」に別々にある場合、2エントリ返してください
+- 例: "eMAXIS Slim 先進国株式" が「NISAつみたて投資枠」と「つみたてNISA」に別々にある場合、必ず2エントリ返してください
 - 行数を減らすことは絶対に禁止です
 
 口座種別のマッピング:
 - NISA成長投資枠 → "nisa_growth"
 - NISAつみたて投資枠 → "nisa_tsumitate"
+- つみたてNISA（旧NISA）→ "old_tsumitate"
 - 特定口座 → "tokutei"
 - DC・確定拠出 → "dc"
 

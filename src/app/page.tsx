@@ -58,7 +58,8 @@ function AssetChart({ snapshots }: { snapshots: { snapshot_date: string; total_a
 
 function accountLabel(type: string) {
   if (type === 'nisa_growth') return 'NISA成長'
-  if (type === 'nisa_tsumitate' || type === 'nisa_tsumitate_old') return 'つみたてNISA'
+  if (type === 'nisa_tsumitate') return 'つみたてNISA'
+  if (type === 'old_tsumitate') return '旧つみたてNISA'
   if (type === 'tokutei') return '特定'
   if (type === 'dc') return 'DC'
   return type
