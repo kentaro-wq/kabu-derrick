@@ -18,7 +18,7 @@ export async function GET() {
   if (orders.length > 0) ctx += '\n執行中注文: ' + orders.map(o => `${o.name}${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 期限${o.deadline}`).join(', ')
 
   const text = await geminiGenerate({
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.5-flash',
     maxTokens: 300,
     messages: [{
       role: 'user',

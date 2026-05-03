@@ -69,7 +69,7 @@ export async function POST() {
   const today = new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })
 
   const text = await geminiGenerate({
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.5-flash',
     maxTokens: 1000,
     messages: [{
       role: 'user',

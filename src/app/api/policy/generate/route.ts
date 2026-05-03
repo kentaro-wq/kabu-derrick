@@ -26,7 +26,7 @@ export async function POST() {
   }).join('\n\n---\n\n')
 
   const content = await geminiGenerate({
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.5-flash',
     maxTokens: 600,
     messages: [{
       role: 'user',

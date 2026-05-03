@@ -6,7 +6,7 @@ type Part = TextPart | ImagePart
 export type GeminiMessage = { role: 'user' | 'model'; parts: Part[] }
 
 export async function geminiGenerate({
-  model = 'gemini-2.0-flash-lite',
+  model = 'gemini-2.5-flash',
   system,
   messages,
   maxTokens = 1000,

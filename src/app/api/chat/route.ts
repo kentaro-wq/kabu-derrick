@@ -115,7 +115,7 @@ export async function POST(req: Request) {
     }
 
     const content = await geminiGenerate({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-flash',
       maxTokens: 3000,
       system: MAIN_SYSTEM,
       messages: priorMessages,
@@ -129,7 +129,7 @@ export async function POST(req: Request) {
       personaIds.map(async id => {
         const persona = PERSONAS[id as keyof typeof PERSONAS]
         const content = await geminiGenerate({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-2.5-flash',
           maxTokens: 400,
           system: persona.system,
           messages: [{ role: 'user', parts: [{ text: `${context}\n\n質問: ${question}` }] }],
@@ -144,7 +144,7 @@ export async function POST(req: Request) {
     const othersText = round1.map((r: { label: string; content: string }) => `【${r.label}の意見】\n${r.content}`).join('\n\n')
     const persona = PERSONAS.contrarian
     const content = await geminiGenerate({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-flash',
       maxTokens: 400,
       system: persona.system,
       messages: [{
@@ -164,7 +164,7 @@ export async function POST(req: Request) {
     ].join('\n\n')
 
     const content = await geminiGenerate({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-flash',
       maxTokens: 2000,
       system: MAIN_SYSTEM,
       messages: [{
