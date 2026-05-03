@@ -26,6 +26,7 @@ export async function PUT(req: Request) {
     asset_type: h.asset_type ?? (typeof h.ticker === 'string' && /^\d{4}$/.test(h.ticker) ? 'domestic_stock' : 'fund'),
     updated_at: new Date().toISOString(),
   }))
+  console.log('[holdings PUT] rows to insert:', JSON.stringify(rows))
   const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
   if (error) {
     console.error('[holdings PUT] insert error:', error.message, 'rows sample:', JSON.stringify(rows[0]))
