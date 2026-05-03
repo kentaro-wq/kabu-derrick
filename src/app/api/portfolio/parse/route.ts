@@ -82,9 +82,9 @@ export async function POST(req: Request) {
         }
         const jsonStr = endIdx >= 0 ? sub.slice(0, endIdx + 1) : sub
         const parsed = JSON.parse(jsonStr)
-        return NextResponse.json(parsed)
+        return NextResponse.json({ ...parsed, _rawText: text.slice(0, 2000) })
       }
-      return NextResponse.json({ holdings: [] })
+      return NextResponse.json({ holdings: [], _rawText: text.slice(0, 2000) })
     } catch (parseErr) {
       console.error('[parse] JSON parse error:', parseErr, 'raw:', text.slice(0, 300))
       return NextResponse.json({ error: '解析失敗: AIが不正なJSONを返しました', raw: text.slice(0, 200) }, { status: 500 })
