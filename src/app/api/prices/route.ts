@@ -1,34 +1,6 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
-
-interface YahooChartResult {
-  chart: {
-    result: Array<{
-      meta: {
-        regularMarketPrice: number
-        previousClose: number
-        currency: string
-      }
-    }> | null
-    error: unknown
-  }
-}
-
-async function fetchPrice(ticker: string): Promise<number | null> {
-  // 4桁数字なら東証(.T)、それ以外はそのまま
-  const symbol = /^\d{4}$/.test(ticker) ? `${ticker}.T` : ticker
-  try {
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
-    )
-    if (!res.ok) return null
-    const data: YahooChartResult = await res.json()
-    return data.chart?.result?.[0]?.meta?.regularMarketPrice ?? null
-  } catch {
-    return null
-  }
-}
+import { fetchPrice } from '@/lib/stock-price'
 
 // 全保有銘柄の株価を取得してDBを更新し、ルールチェックを実行
 export async function POST() {
@@ -45,7 +17,6 @@ export async function POST() {
       const price = await fetchPrice(h.ticker)
       if (price == null) return { ticker: h.ticker, name: h.name, price: null, updated: false }
 
-      // quantity が null の場合は current_price のみ更新（0 で上書きしない）
       if (h.quantity == null) {
         await adminSupabase
           .from('holdings')
@@ -75,7 +46,6 @@ export async function POST() {
   const updated = results.filter(r => r.updated).length
   const failed = results.filter(r => !r.updated).map(r => r.ticker)
 
-  // 株価更新後にルールチェックと市場暴落チェックを並行実行
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
   const [checkRes, marketRes] = await Promise.all([
     fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }),
