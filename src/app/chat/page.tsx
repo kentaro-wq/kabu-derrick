@@ -54,6 +54,7 @@ interface Message {
   persona: string
   content: string
   subMessages?: SubMessage[]
+  prices?: Record<string, number>  // AI返答内の銘柄のリアルタイム株価
 }
 
 interface Session {
@@ -70,6 +71,47 @@ const PERSONAS = [
   { id: 'contrarian', label: '逆張り屋', emoji: '⚡', color: '#f59e0b' },
   { id: 'longterm', label: '長期思考家', emoji: '🌲', color: '#a78bfa' },
 ]
+
+// AI返答テキストから証券コードを検出してリアルタイム株価を取得
+async function fetchPricesFromAiResponse(text: string): Promise<Record<string, number>> {
+  try {
+    const res = await fetch('/api/prices/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok) return {}
+    return await res.json()
+  } catch {
+    return {}
+  }
+}
+
+function PriceCard({ prices }: { prices: Record<string, number> }) {
+  const entries = Object.entries(prices)
+  if (entries.length === 0) return null
+  return (
+    <div style={{
+      marginTop: 8,
+      padding: '8px 12px',
+      background: 'rgba(34,197,94,0.08)',
+      border: '1px solid rgba(34,197,94,0.3)',
+      borderRadius: 10,
+      fontSize: 12,
+    }}>
+      <div style={{ color: 'var(--muted)', marginBottom: 4, fontSize: 11 }}>
+        📡 リアルタイム株価（Yahoo Finance）
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+        {entries.map(([ticker, price]) => (
+          <span key={ticker} style={{ color: 'var(--text)', fontWeight: 600 }}>
+            {ticker}：<span style={{ color: '#22c55e' }}>{price.toLocaleString()}円</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 const DEFAULT_SUGGESTIONS = [
   'NISA成長枠の残り136万円、何に投資するのがよいか？',
@@ -264,7 +306,8 @@ export default function ChatPage() {
           body: JSON.stringify({ question, mode: 'main', history, imageData: capturedImage, imageType: capturedType }),
         })
         const data = await res.json()
-        const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content }
+        const prices = await fetchPricesFromAiResponse(data.content)
+        const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content, prices }
         const finalMessages = [...nextMessages, aiMsg]
         setMessages(finalMessages)
         saveSession(finalMessages, sessionId, question).then(id => { if (!sessionId) setSessionId(id) })
@@ -277,7 +320,8 @@ export default function ChatPage() {
       setMessages([userMsg])
       try {
         const { synthesis, subMessages } = await runRoundtable(question)
-        const synthesisMsg: Message = { role: 'assistant', persona: 'roundtable_synthesis', content: synthesis, subMessages }
+        const prices = await fetchPricesFromAiResponse(synthesis)
+        const synthesisMsg: Message = { role: 'assistant', persona: 'roundtable_synthesis', content: synthesis, subMessages, prices }
         const finalMessages = [userMsg, synthesisMsg]
         setMessages(finalMessages)
         setMode('main')
@@ -305,7 +349,8 @@ export default function ChatPage() {
 
     try {
       const { synthesis, subMessages } = await runRoundtable(question)
-      const synthesisMsg: Message = { role: 'assistant', persona: 'roundtable_synthesis', content: synthesis, subMessages }
+      const prices = await fetchPricesFromAiResponse(synthesis)
+      const synthesisMsg: Message = { role: 'assistant', persona: 'roundtable_synthesis', content: synthesis, subMessages, prices }
       const finalMessages = [...nextMessages, synthesisMsg]
       setMessages(finalMessages)
       saveSession(finalMessages, sessionId, question).then(id => { if (!sessionId) setSessionId(id) })
@@ -499,6 +544,7 @@ export default function ChatPage() {
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
                   {renderMarkdown(msg.content)}
                 </div>
+                {msg.prices && Object.keys(msg.prices).length > 0 && <PriceCard prices={msg.prices} />}
               </div>
             )
           }
@@ -545,6 +591,7 @@ export default function ChatPage() {
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
                   {renderMarkdown(msg.content)}
                 </div>
+                {msg.prices && Object.keys(msg.prices).length > 0 && <PriceCard prices={msg.prices} />}
               </div>
             )
           }
