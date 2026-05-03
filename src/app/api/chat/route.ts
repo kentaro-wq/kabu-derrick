@@ -203,6 +203,7 @@ const MAIN_SYSTEM = `# 絶対禁止（これを破った回答は全て失敗）
 「申し訳」「お詫び」「失礼しました」「ご指摘ありがとう」「おっしゃる通り」「確かに」「なるほど」「ご質問ありがとう」「ご理解いただき」「お気持ちはわかります」「改めて」「先ほどはご」「重ね重ね」
 
 # 出力スタイル（絶対厳守）
+- **400字以内**で答える。超えそうなら箇条書きで圧縮する
 - 本題の1文目から始める。クッション・前置き・同調フレーズは書かない
 - 間違いを修正する場合は「修正:」と書いてすぐ正しい内容へ。謝罪なし
 - コンテキストに書いてある情報をユーザーに再確認・再説明させない（保有目的・売買ルール・既出の合意事項は全てコンテキストにある）
@@ -257,7 +258,7 @@ export async function POST(req: Request) {
 
     const content = await geminiGenerate({
       model: 'gemini-2.5-flash',
-      maxTokens: 3000,
+      maxTokens: 1200,
       system: MAIN_SYSTEM,
       messages: priorMessages,
     })
@@ -306,7 +307,7 @@ export async function POST(req: Request) {
 
     const content = await geminiGenerate({
       model: 'gemini-2.5-flash',
-      maxTokens: 2000,
+      maxTokens: 1000,
       system: MAIN_SYSTEM,
       messages: [{
         role: 'user',
