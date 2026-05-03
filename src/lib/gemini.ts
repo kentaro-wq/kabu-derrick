@@ -43,7 +43,9 @@ export async function geminiGenerate({
   }
 
   const data = await res.json() as {
-    candidates?: Array<{ content: { parts: Array<{ text: string }> } }>
+    candidates?: Array<{ content: { parts: Array<{ text?: string; thought?: boolean }> } }>
   }
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+  const parts = data.candidates?.[0]?.content?.parts ?? []
+  const textPart = parts.find(p => !p.thought && p.text != null) ?? parts[parts.length - 1]
+  return textPart?.text ?? ''
 }
