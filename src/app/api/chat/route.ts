@@ -134,6 +134,48 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   return ctx
 }
 
+// 会話履歴から確定済み決定事項をliteモデルで高速抽出
+async function extractConfirmedDecisions(
+  history: Array<{ role: string; content: string }>
+): Promise<string> {
+  if (history.length < 4) return ''
+  // 最新20ターンを対象（古すぎる履歴は除外）
+  const recent = history.slice(-20)
+  const historyText = recent
+    .map(m => `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.content.slice(0, 300)}`)
+    .join('\n')
+  try {
+    const result = await geminiGenerate({
+      model: 'gemini-2.5-flash-lite',
+      maxTokens: 400,
+      timeoutMs: 8000,
+      messages: [{
+        role: 'user',
+        parts: [{ text: `以下の投資相談の会話から「ユーザーとAIが合意・確定した具体的な決定事項」のみを箇条書きで最大8件抽出してください。
+
+抽出対象：
+- 具体的な行動・注文の合意（いつ・何を・いくらで・何株、など）
+- ユーザーが明示した制約・優先順位（「これはサブテーマ」「第一目標は〜」など）
+- 数値的に合意した水準（指値価格・損切りライン・購入株数など）
+
+抽出しないもの：
+- まだ検討中の内容・仮定の話
+- AIの一方的な提案（ユーザーが同意していないもの）
+- 一般的な説明・教育的な内容
+
+決定事項がなければ「なし」と返してください。箇条書きのみ・他の文章不要。
+
+会話:
+${historyText}` }],
+      }],
+    })
+    const trimmed = result.trim()
+    return trimmed === 'なし' ? '' : trimmed
+  } catch {
+    return ''
+  }
+}
+
 const MAIN_SYSTEM = `あなたは「投資アドバイザー」として、ユーザー（山田さん、50歳）の個人投資をサポートする総合アシスタントです。
 守りの分析家・成長論者・逆張り屋・長期思考家の視点を統合して助言します。
 
@@ -148,7 +190,13 @@ export async function POST(req: Request) {
   const { question, mode, round1, history, imageData, imageType } = body
 
   // 質問文から証券コードを検出してリアルタイム株価を取得
-  const realtimePrices = question ? await fetchMentionedPrices(question) : {}
+  // 会話履歴から確定済み決定事項を抽出（mainモードのみ、並列実行）
+  const [realtimePrices, confirmedDecisions] = await Promise.all([
+    question ? fetchMentionedPrices(question) : Promise.resolve({}),
+    mode === 'main' && history?.length >= 4
+      ? extractConfirmedDecisions(history)
+      : Promise.resolve(''),
+  ])
 
   const context = await getPortfolioContext(realtimePrices)
 
@@ -160,7 +208,12 @@ export async function POST(req: Request) {
       })
     )
 
-    const textContent = `${context}\n\n質問: ${question}`
+    // 確定済み事項を最優先ブロックとしてコンテキスト冒頭に注入
+    const decisionBlock = confirmedDecisions
+      ? `【この会話で確定した事項（以下に反する提案・計算は絶対にしないこと）】\n${confirmedDecisions}\n\n`
+      : ''
+
+    const textContent = `${decisionBlock}${context}\n\n質問: ${question}`
     if (imageData && imageType) {
       priorMessages.push({
         role: 'user',
