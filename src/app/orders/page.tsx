@@ -1,7 +1,20 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import type { Order } from '@/types'
+
+interface ParsedOrder {
+  name: string
+  ticker: string | null
+  order_type: 'buy' | 'sell'
+  order_method: 'limit' | 'market'
+  price: number | null
+  quantity: number
+  account_type: string
+  deadline: string | null
+  order_number: string | null
+  status: 'active' | 'executed' | 'cancelled'
+}
 
 function daysUntil(dateStr: string): number {
   const today = new Date(); today.setHours(0,0,0,0)
@@ -35,6 +48,13 @@ export default function OrdersPage() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
+
+  // スクショ取込
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [importing, setImporting] = useState(false)
+  const [parsedOrders, setParsedOrders] = useState<ParsedOrder[] | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [savingImport, setSavingImport] = useState(false)
 
   const reload = () =>
     fetch('/api/orders').then(r => r.json()).then(d => { setOrders(Array.isArray(d) ? d : []); setLoading(false) })
@@ -72,6 +92,62 @@ export default function OrdersPage() {
     setSubmitting(false)
   }
 
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImportError(null)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const img = new Image()
+      img.onerror = () => setImportError('画像を読み込めませんでした。')
+      img.onload = async () => {
+        const maxPx = 1600
+        const scale = Math.min(1, maxPx / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(img.width * scale)
+        canvas.height = Math.round(img.height * scale)
+        const ctx = canvas.getContext('2d')
+        if (!ctx) { setImportError('画像変換に失敗しました。'); return }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        const compressed = canvas.toDataURL('image/jpeg', 0.85)
+        const imageData = compressed.split(',')[1]
+        setImporting(true)
+        try {
+          const res = await fetch('/api/orders/parse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageData, imageType: 'image/jpeg' }),
+          })
+          const data = await res.json()
+          if (data.error) throw new Error(data.error)
+          if (!data.orders || data.orders.length === 0) throw new Error('注文が検出できませんでした。楽天証券の注文照会画面のスクショをお試しください。')
+          setParsedOrders(data.orders)
+        } catch (err) {
+          setImportError(err instanceof Error ? err.message : '解析に失敗しました。')
+        }
+        setImporting(false)
+      }
+      img.src = ev.target?.result as string
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  const saveImportedOrders = async () => {
+    if (!parsedOrders) return
+    setSavingImport(true)
+    await Promise.all(parsedOrders.map(o =>
+      fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...o, status: o.status ?? 'active', alert_days: [] }),
+      })
+    ))
+    await reload()
+    setParsedOrders(null)
+    setSavingImport(false)
+  }
+
   const active = orders.filter(o => o.status === 'active')
   const inactive = orders.filter(o => o.status !== 'active')
 
@@ -92,13 +168,74 @@ export default function OrdersPage() {
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>注文タスク管理</div>
           </div>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          style={{ fontSize: 13, fontWeight: 600, padding: '7px 14px', borderRadius: 8, border: 'none', background: showForm ? 'var(--surface2)' : 'var(--accent)', color: showForm ? 'var(--muted)' : '#fff', cursor: 'pointer' }}
-        >
-          {showForm ? 'キャンセル' : '＋ 注文追加'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImportFile} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            style={{ fontSize: 13, fontWeight: 600, padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)', cursor: 'pointer', opacity: importing ? 0.6 : 1 }}
+          >
+            {importing ? '解析中…' : '📷 取込'}
+          </button>
+          <button
+            onClick={() => setShowForm(!showForm)}
+            style={{ fontSize: 13, fontWeight: 600, padding: '7px 14px', borderRadius: 8, border: 'none', background: showForm ? 'var(--surface2)' : 'var(--accent)', color: showForm ? 'var(--muted)' : '#fff', cursor: 'pointer' }}
+          >
+            {showForm ? 'キャンセル' : '＋ 注文追加'}
+          </button>
+        </div>
       </div>
+
+      {/* スクショ取込エラー */}
+      {importError && (
+        <div style={{ background: '#3b1515', border: '1px solid #f87171', borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#f87171', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{importError}</span>
+          <button onClick={() => setImportError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 16 }}>×</button>
+        </div>
+      )}
+
+      {/* スクショ取込プレビュー */}
+      {parsedOrders && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 14, padding: 16, marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>📷 解析結果（{parsedOrders.length}件）</div>
+            <button onClick={() => setParsedOrders(null)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 18 }}>×</button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+            {parsedOrders.map((o, i) => (
+              <div key={i} style={{ background: 'var(--surface2)', borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    {o.name}
+                    {o.ticker && <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>{o.ticker}</span>}
+                  </div>
+                  <span style={{
+                    padding: '2px 8px', borderRadius: 99, fontSize: 10, fontWeight: 600,
+                    background: o.order_type === 'sell' ? '#3b1515' : '#1a3a2a',
+                    color: o.order_type === 'sell' ? '#f87171' : '#4ade80',
+                  }}>
+                    {o.order_type === 'sell' ? '売り' : '買い'} {o.order_method === 'limit' ? '指値' : '成行'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {o.price != null && <span>指値: {o.price.toLocaleString()}円</span>}
+                  <span>数量: {o.quantity}株</span>
+                  {o.account_type && <span>{o.account_type === 'nisa_growth' ? 'NISA成長' : o.account_type === 'nisa_tsumitate' ? 'つみたて' : o.account_type === 'tokutei' ? '特定' : o.account_type}</span>}
+                  {o.deadline && <span>期限: {o.deadline}</span>}
+                  {o.order_number && <span>注文番号: {o.order_number}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={saveImportedOrders}
+            disabled={savingImport}
+            style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', opacity: savingImport ? 0.6 : 1 }}
+          >
+            {savingImport ? '保存中...' : `✅ ${parsedOrders.length}件を一括登録`}
+          </button>
+        </div>
+      )}
 
       {/* 新規注文フォーム */}
       {showForm && (
