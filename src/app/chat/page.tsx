@@ -227,6 +227,13 @@ export default function ChatPage() {
       ...data2.responses.map((r: { persona: string; content: string }) => ({ persona: r.persona + '_reply', content: r.content, isReply: true })),
     ]
 
+    // fire-and-forget: synthesisから判断を抽出してDBに保存（レスポンスは待たない）
+    fetch('/api/ai-judgment-extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, synthesis: data3.content }),
+    }).catch(() => {})
+
     return { synthesis: data3.content, subMessages }
   }
 

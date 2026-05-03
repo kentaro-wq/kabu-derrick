@@ -30,16 +30,18 @@ const PERSONAS = {
 }
 
 async function getPortfolioContext(): Promise<string> {
-  const [holdingsRes, ordersRes, tsumitateRes, policyRes] = await Promise.all([
+  const [holdingsRes, ordersRes, tsumitateRes, policyRes, judgmentsRes] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     adminSupabase.from('tsumitate_settings').select('*'),
     adminSupabase.from('investment_policy').select('content').limit(1).single(),
+    adminSupabase.from('ai_judgment_log').select('name,ticker,judgment_type,ai_summary,price_at_time,created_at').order('created_at', { ascending: false }).limit(15),
   ])
   const holdings = holdingsRes.data ?? []
   const orders = ordersRes.data ?? []
   const tsumitate = tsumitateRes.data ?? []
   const policy = policyRes.data?.content ?? ''
+  const judgments = judgmentsRes.data ?? []
   const total = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
   const tsumitateTotal = tsumitate.reduce((s: number, t: { monthly_amount: number }) => s + t.monthly_amount, 0)
 
@@ -73,6 +75,18 @@ async function getPortfolioContext(): Promise<string> {
       ctx += `・${o.name} ${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 ${o.quantity}株 期限${o.deadline}\n`
     })
   }
+
+  if (judgments.length > 0) {
+    const typeLabel: Record<string, string> = { hold: '保有継続', sell: '売却', buy: '買い増し', watch: '様子見', caution: '警戒' }
+    ctx += `\n【過去のAI判断履歴（直近${judgments.length}件）】\n`
+    ctx += `※ あなた自身が過去に下した判断です。その後の状況と照らし合わせ、必要なら前回の見解を修正・深化させてください。\n`
+    judgments.forEach(j => {
+      const date = new Date(j.created_at).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })
+      const price = j.price_at_time ? `（当時${j.price_at_time.toLocaleString()}円）` : ''
+      ctx += `・[${date}] ${j.name}${j.ticker ? `(${j.ticker})` : ''}: ${typeLabel[j.judgment_type] ?? j.judgment_type}推奨${price} — ${j.ai_summary}\n`
+    })
+  }
+
   return ctx
 }
 
