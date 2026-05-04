@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { geminiGenerate, GeminiMessage } from '@/lib/gemini'
+import { claudeGenerate, ClaudeMessage } from '@/lib/claude'
+import { geminiGenerate } from '@/lib/gemini' // orders/parse等の画像解析で引き続き使用
 import { adminSupabase } from '@/lib/supabase'
 import { fetchMentionedPrices } from '@/lib/stock-price'
 
@@ -148,10 +149,9 @@ async function extractConfirmedDecisions(
     .map(m => `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.content.slice(0, 300)}`)
     .join('\n')
   try {
-    const result = await geminiGenerate({
-      model: 'gemini-2.5-flash-lite',
+    const result = await claudeGenerate({
+      model: 'claude-haiku-4-5-20251001',
       maxTokens: 400,
-      timeoutMs: 8000,
       messages: [{
         role: 'user',
         parts: [{ text: `以下の会話から「ユーザーとAIが合意・確定した決定事項」のみ箇条書きで最大8件抽出。
@@ -182,7 +182,7 @@ export async function POST(req: Request) {
   const context = await getPortfolioContext(realtimePrices)
 
   if (mode === 'main') {
-    const priorMessages: GeminiMessage[] = (history ?? []).map(
+    const priorMessages: ClaudeMessage[] = (history ?? []).map(
       (m: { role: string; content: string }) => ({
         role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model',
         parts: [{ text: m.content }],
@@ -206,8 +206,8 @@ export async function POST(req: Request) {
       priorMessages.push({ role: 'user', parts: [{ text: textContent }] })
     }
 
-    const content = await geminiGenerate({
-      model: 'gemini-2.5-flash',
+    const content = await claudeGenerate({
+      model: 'claude-sonnet-4-6',
       maxTokens: 1200,
       system: MAIN_SYSTEM,
       messages: priorMessages,
@@ -218,8 +218,8 @@ export async function POST(req: Request) {
   if (mode === 'round1') {
     const responses = await Promise.all(
       Object.entries(PERSONAS).map(async ([id, persona]) => {
-        const content = await geminiGenerate({
-          model: 'gemini-2.5-flash',
+        const content = await claudeGenerate({
+          model: 'claude-haiku-4-5-20251001',
           maxTokens: 400,
           system: persona.system,
           messages: [{ role: 'user', parts: [{ text: `${context}\n\n質問: ${question}` }] }],
@@ -233,8 +233,8 @@ export async function POST(req: Request) {
   if (mode === 'round2' && round1) {
     const othersText = round1.map((r: { label: string; content: string }) => `【${r.label}の意見】\n${r.content}`).join('\n\n')
     const persona = PERSONAS.contrarian
-    const content = await geminiGenerate({
-      model: 'gemini-2.5-flash',
+    const content = await claudeGenerate({
+      model: 'claude-haiku-4-5-20251001',
       maxTokens: 400,
       system: persona.system,
       messages: [{
@@ -251,8 +251,8 @@ export async function POST(req: Request) {
       ...body.round2.map((r: { label: string; content: string }) => `【${r.label}（再考）】\n${r.content}`),
     ].join('\n\n')
 
-    const content = await geminiGenerate({
-      model: 'gemini-2.5-flash',
+    const content = await claudeGenerate({
+      model: 'claude-sonnet-4-6',
       maxTokens: 1000,
       system: MAIN_SYSTEM,
       messages: [{
