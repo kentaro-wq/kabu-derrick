@@ -38,13 +38,23 @@ export async function claudeGenerate({
     }),
   }))
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: maxTokens,
-    ...(system ? { system } : {}),
-    messages: anthropicMessages,
-  })
+  try {
+    const response = await client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      ...(system ? { system } : {}),
+      messages: anthropicMessages,
+    })
 
-  const textBlock = response.content.find(b => b.type === 'text')
-  return textBlock?.type === 'text' ? textBlock.text : ''
+    const textBlock = response.content.find(b => b.type === 'text')
+    return textBlock?.type === 'text' ? textBlock.text : ''
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'status' in err) {
+      const e = err as { status: number; message?: string; error?: unknown }
+      console.error(`[claude] API error status=${e.status} body=${JSON.stringify(e.error ?? e.message)}`)
+    } else {
+      console.error('[claude] unexpected error', err)
+    }
+    throw err
+  }
 }
