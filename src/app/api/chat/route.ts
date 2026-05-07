@@ -266,8 +266,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: 'invalid mode' }, { status: 400 })
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[chat] handler error:', msg)
-    return NextResponse.json({ error: msg }, { status: 500 })
+    console.error('[chat] handler error:', err)
+    return NextResponse.json({ error: 'internal server error' }, { status: 500 })
   }
 }
