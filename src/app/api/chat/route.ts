@@ -171,6 +171,7 @@ async function extractConfirmedDecisions(
 export async function POST(req: Request) {
   const body = await req.json()
   const { question, mode, round1, history, imageData, imageType } = body
+  try {
 
   const [realtimePrices, confirmedDecisions] = await Promise.all([
     question ? fetchMentionedPrices(question) : Promise.resolve({}),
@@ -263,5 +264,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ content })
   }
 
-  return NextResponse.json({ error: 'invalid mode' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid mode' }, { status: 400 })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[chat] handler error:', msg)
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
 }
