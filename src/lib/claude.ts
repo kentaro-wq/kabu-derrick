@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 
-type TextPart = { text: string }
+type TextPart = { text: string; cache_control?: { type: 'ephemeral' } }
 type ImagePart = { inline_data: { mime_type: string; data: string } }
 type Part = TextPart | ImagePart
 export type ClaudeMessage = { role: 'user' | 'model'; parts: Part[] }
@@ -34,15 +34,24 @@ export async function claudeGenerate({
           },
         }
       }
-      return { type: 'text' as const, text: p.text }
+      const block: Anthropic.Messages.TextBlockParam = { type: 'text', text: p.text }
+      if (p.cache_control) {
+        return { ...block, cache_control: { type: 'ephemeral' as const } }
+      }
+      return block
     }),
   }))
+
+  // システムプロンプトをキャッシュ対象にする（prompt caching）
+  const systemParam: Anthropic.Messages.TextBlockParam[] | undefined = system
+    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+    : undefined
 
   try {
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
-      ...(system ? { system } : {}),
+      ...(systemParam ? { system: systemParam } : {}),
       messages: anthropicMessages,
     })
 

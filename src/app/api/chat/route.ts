@@ -175,7 +175,7 @@ export async function POST(req: Request) {
 
   const [realtimePrices, confirmedDecisions] = await Promise.all([
     question ? fetchMentionedPrices(question) : Promise.resolve({}),
-    mode === 'main' && history?.length >= 4
+    mode === 'main' && history?.length >= 8
       ? extractConfirmedDecisions(history)
       : Promise.resolve(''),
   ])
@@ -194,17 +194,26 @@ export async function POST(req: Request) {
       ? `【この会話で確定した事項（以下に反する提案・計算は絶対にしないこと）】\n${confirmedDecisions}\n\n`
       : ''
 
-    const textContent = `${decisionBlock}${context}\n\n質問: ${question}`
+    const contextContent = `${decisionBlock}${context}`
+    const questionContent = `\n\n質問: ${question}`
     if (imageData && imageType) {
+      // 画像あり: キャッシュ分割なし（画像と一緒に送る）
       priorMessages.push({
         role: 'user',
         parts: [
           { inline_data: { mime_type: imageType as string, data: imageData } },
-          { text: textContent },
+          { text: contextContent + questionContent },
         ],
       })
     } else {
-      priorMessages.push({ role: 'user', parts: [{ text: textContent }] })
+      // テキストのみ: コンテキストをキャッシュ対象、質問は毎回送信
+      priorMessages.push({
+        role: 'user',
+        parts: [
+          { text: contextContent, cache_control: { type: 'ephemeral' } },
+          { text: questionContent },
+        ],
+      })
     }
 
     const content = await claudeGenerate({
