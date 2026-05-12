@@ -31,10 +31,19 @@ export async function POST(req: Request) {
           {
             text: `この画像は楽天証券の保有銘柄一覧または損益管理画面です。
 
-【重要】画像に見えている行を1行1エントリとして、絶対に統合・省略せずに全て抽出してください。
+【絶対ルール】
+- 「合計」「小計」「合計金額」などの集計行は除外し、個別銘柄行だけを抽出してください
+- 画像に見えている個別銘柄行を1行1エントリとして、絶対に統合・省略せずに全て抽出してください
 - 同じ銘柄名でも口座種別が違う行は必ず別エントリにしてください
-- 例: "eMAXIS Slim 先進国株式" が「NISAつみたて投資枠」と「つみたてNISA」に別々にある場合、必ず2エントリ返してください
 - 行数を減らすことは絶対に禁止です
+
+【列の読み取り方】
+- 「保有数量」「数量」「株数」「口数」の列 → quantity（数値のみ、「株」「口」は除く）
+- 「現在値」「現在価格」の列 → current_price（1株あたりの価格）
+- 「取得単価」「平均取得価額」の列 → purchase_price（1株あたりの取得価格）
+- 「評価額」「評価金額」の列 → evaluation_amount（保有総額。quantity × current_price と同じ値）
+- 「評価損益」「損益」の列 → unrealized_gain（プラスまたはマイナスの数値）
+- 「損益率」「評価損益率」の列 → unrealized_gain_pct（%の数値のみ）
 
 口座種別のマッピング:
 - NISA成長投資枠 → "nisa_growth"
@@ -54,15 +63,15 @@ export async function POST(req: Request) {
   "holdings": [
     {
       "name": "銘柄名",
-      "ticker": "証券コード",
+      "ticker": "証券コード（4桁数字）またはnull",
       "account_type": "口座種別",
       "asset_type": "資産種別",
-      "quantity": 保有株数またはnull,
-      "current_price": 現在値またはnull,
-      "purchase_price": 取得単価またはnull,
-      "evaluation_amount": 評価額またはnull,
-      "unrealized_gain": 評価損益またはnull,
-      "unrealized_gain_pct": 評価損益率またはnull
+      "quantity": 保有株数（数値）またはnull,
+      "current_price": 現在値（1株価格）またはnull,
+      "purchase_price": 取得単価（1株価格）またはnull,
+      "evaluation_amount": 評価額（総額）またはnull,
+      "unrealized_gain": 評価損益（総額）またはnull,
+      "unrealized_gain_pct": 評価損益率（数値のみ）またはnull
     }
   ]
 }

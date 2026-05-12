@@ -22,7 +22,7 @@ export async function PUT(req: Request) {
   const { holdings } = await req.json()
   await adminSupabase.from('holdings').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   const rows = holdings
-    .filter((h: Record<string, unknown>) => h.name)
+    .filter((h: Record<string, unknown>) => h.name && !String(h.name).includes('合計') && !String(h.name).includes('小計'))
     .map((h: Record<string, unknown>) => {
       const ticker = h.ticker || String(h.name).replace(/[^\w]/g, '').slice(0, 12).toUpperCase() || 'UNKNOWN'
       return {
