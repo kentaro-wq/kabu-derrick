@@ -213,22 +213,33 @@ async function extractConfirmedDecisions(
 
 type PortfolioAction =
   | { action: 'none' }
+  | { action: 'order_placed'; name: string; ticker?: string | null; order_type: 'buy' | 'sell'; price: number | null; quantity: number | null; account_type: string; deadline?: string | null }
   | { action: 'buy_executed'; name: string; ticker?: string | null; quantity: number | null; price: number | null; account_type: string }
   | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null }
 
 async function detectPortfolioAction(question: string): Promise<PortfolioAction> {
-  const keywords = ['約定', '買えた', '購入した', '購入できた', '売れた', '売却した', '利確', '損切']
+  const keywords = [
+    // 注文
+    '注文した', '指値を入れた', '指値注文', '発注した', '注文入れた', '指値置いた', '買い注文', '売り注文', '注文を出した',
+    // 約定
+    '約定', '買えた', '購入した', '購入できた', '売れた', '売却した', '利確', '損切',
+  ]
   if (!keywords.some(k => question.includes(k))) return { action: 'none' }
+
+  // 今日から90日後をデフォルト期限に使う
+  const defaultDeadline = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   try {
     const result = await claudeGenerate({
       model: 'claude-haiku-4-5-20251001',
-      maxTokens: 200,
+      maxTokens: 250,
       messages: [{
         role: 'user',
-        parts: [{ text: `以下のメッセージから株式取引の約定情報をJSONで抽出。約定情報がなければ {"action":"none"} を返す。
+        parts: [{ text: `以下のメッセージから株式取引情報をJSONで抽出。該当なければ {"action":"none"} を返す。
+注文した: {"action":"order_placed","name":"銘柄名","ticker":"4桁コードまたはnull","order_type":"buy|sell","price":指値価格またはnull,"quantity":株数またはnull,"account_type":"nisa_growth|tokutei","deadline":"YYYY-MM-DD形式の期限またはnull"}
 買い約定: {"action":"buy_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull,"price":約定価格またはnull,"account_type":"nisa_growth|tokutei"}
 売り約定: {"action":"sell_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull}
+今日: ${new Date().toISOString().slice(0, 10)} / デフォルト期限: ${defaultDeadline}
 JSONのみ返答:
 
 ${question}` }],
@@ -244,6 +255,29 @@ ${question}` }],
 async function executePortfolioAction(action: PortfolioAction): Promise<string[]> {
   if (action.action === 'none') return []
   const logs: string[] = []
+
+  if (action.action === 'order_placed') {
+    const defaultDeadline = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const { error } = await adminSupabase.from('orders').insert({
+      name: action.name,
+      ticker: action.ticker ?? '',
+      order_type: action.order_type,
+      order_method: 'limit',
+      price: action.price,
+      quantity: action.quantity,
+      account_type: action.account_type ?? 'nisa_growth',
+      deadline: action.deadline ?? defaultDeadline,
+      status: 'active',
+    })
+    if (!error) {
+      const typeLabel = action.order_type === 'buy' ? '買い' : '売り'
+      const priceStr = action.price ? `${action.price.toLocaleString()}円` : '価格未定'
+      const qtyStr = action.quantity ? `${action.quantity}株` : '株数未定'
+      logs.push(`✅ 注文登録「${action.name}」${typeLabel}指値 ${priceStr} ${qtyStr}（${action.account_type === 'nisa_growth' ? 'NISA成長' : '特定口座'}）`)
+    } else {
+      logs.push(`⚠️ 注文登録に失敗しました: ${error.message}`)
+    }
+  }
 
   if (action.action === 'buy_executed') {
     // 1. 対応する注文を約定済みに更新
