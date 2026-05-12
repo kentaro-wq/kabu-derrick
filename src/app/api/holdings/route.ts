@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
+import { recalcNisaUsed } from '@/lib/nisa-sync'
 
 export async function GET() {
   const { data, error } = await adminSupabase
@@ -62,6 +63,7 @@ export async function PUT(req: Request) {
     fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
   })()
 
+  recalcNisaUsed().catch(console.error) // 保有更新 → NISA利用済を再計算
   return NextResponse.json(data)
 }
 
