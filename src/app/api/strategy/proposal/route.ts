@@ -73,16 +73,23 @@ export async function POST() {
     ctx += `【市場】${marketStats.marketSentiment}\n`
   }
 
-  const prompt = `あなたはNISA優先・機械的ルール遵守の投資アドバイザーです。以下の状況を深く分析し、具体的で実践的な戦略をJSONで返してください。
+  const prompt = `NISA優先・機械的ルール遵守の投資アドバイザーとして以下の状況を分析し、JSONで返してください。
 
 ${ctx}
-【重要前提】
-- NISA成長枠は長期優良株を置く枠（非課税メリット最大化）
-- 特定口座は試し買い・高回転・NISA枠超過分の受け皿
+【前提】
+- NISA成長枠=長期優良株（非課税メリット最大化）、特定口座=試し買い・NISA枠超過分
 - ユーザーは個別株初心者。感情を排し機械的ルールで動く方針
 
-以下のJSON形式のみで返答:
-{"headline":"戦略の核心を一言で","nisaStrategy":"NISA枠の具体的な使い方（残枠・期間・優先順位）","tokuteiStrategy":"NISA使い切り後の特定口座の補完方針","nextActions":["今すぐやること1","今すぐやること2","今すぐやること3","今すぐやること4","今すぐやること5"],"riskNotes":"現在のポートフォリオの主なリスクと注意点"}`
+【出力ルール】
+- headline: 15字以内の核心フレーズ
+- nisaPoints: NISA戦略の要点を箇条書き3〜4件（各30字以内）
+- tokuteiPoints: 特定口座の方針を箇条書き2〜3件（各30字以内）
+- nextActions: 今週中にやること5件（各40字以内・動詞で始める具体的な行動）
+- riskPoints: 現状のリスク・注意点を箇条書き2〜3件（各30字以内）
+- urgency: "high"|"medium"|"low"（今すぐ動く必要があるか）
+
+JSON形式のみで返答:
+{"headline":"","nisaPoints":["","",""],"tokuteiPoints":["",""],"nextActions":["","","","",""],"riskPoints":["",""],"urgency":"medium"}`
 
   const text = await geminiGenerate({
     model: 'gemini-2.5-flash',
@@ -99,10 +106,10 @@ ${ctx}
     try {
       const { error: insertError } = await adminSupabase.from('strategy_proposals').insert({
         headline: proposal.headline ?? null,
-        nisa_strategy: proposal.nisaStrategy ?? null,
-        tokutei_strategy: proposal.tokuteiStrategy ?? null,
+        nisa_strategy: Array.isArray(proposal.nisaPoints) ? proposal.nisaPoints.join('\n') : (proposal.nisaStrategy ?? null),
+        tokutei_strategy: Array.isArray(proposal.tokuteiPoints) ? proposal.tokuteiPoints.join('\n') : (proposal.tokuteiStrategy ?? null),
         next_actions: proposal.nextActions ?? [],
-        risk_notes: proposal.riskNotes ?? null,
+        risk_notes: Array.isArray(proposal.riskPoints) ? proposal.riskPoints.join('\n') : (proposal.riskNotes ?? null),
         raw_response: text,
         created_at: new Date().toISOString(),
       })
