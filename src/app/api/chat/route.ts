@@ -208,18 +208,147 @@ async function extractConfirmedDecisions(
   }
 }
 
+// ─── 約定検知・ポートフォリオ自動更新 ─────────────────────────────
+
+type PortfolioAction =
+  | { action: 'none' }
+  | { action: 'buy_executed'; name: string; ticker?: string | null; quantity: number | null; price: number | null; account_type: string }
+  | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null }
+
+async function detectPortfolioAction(question: string): Promise<PortfolioAction> {
+  const keywords = ['約定', '買えた', '購入した', '購入できた', '売れた', '売却した', '利確', '損切']
+  if (!keywords.some(k => question.includes(k))) return { action: 'none' }
+
+  try {
+    const result = await claudeGenerate({
+      model: 'claude-haiku-4-5-20251001',
+      maxTokens: 200,
+      messages: [{
+        role: 'user',
+        parts: [{ text: `以下のメッセージから株式取引の約定情報をJSONで抽出。約定情報がなければ {"action":"none"} を返す。
+買い約定: {"action":"buy_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull,"price":約定価格またはnull,"account_type":"nisa_growth|tokutei"}
+売り約定: {"action":"sell_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull}
+JSONのみ返答:
+
+${question}` }],
+      }],
+    })
+    const cleaned = result.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+    return JSON.parse(cleaned) as PortfolioAction
+  } catch {
+    return { action: 'none' }
+  }
+}
+
+async function executePortfolioAction(action: PortfolioAction): Promise<string[]> {
+  if (action.action === 'none') return []
+  const logs: string[] = []
+
+  if (action.action === 'buy_executed') {
+    // 1. 対応する注文を約定済みに更新
+    const baseOrderQuery = adminSupabase
+      .from('orders')
+      .update({ status: 'executed', updated_at: new Date().toISOString() })
+      .eq('status', 'active')
+      .eq('order_type', 'buy')
+    const orderFinal = action.ticker
+      ? baseOrderQuery.eq('ticker', action.ticker)
+      : baseOrderQuery.ilike('name', `%${action.name}%`)
+    const { error: orderErr } = await orderFinal
+    if (!orderErr) logs.push(`✅ 注文「${action.name}」を約定済みに更新`)
+
+    // 2. 保有を追加/更新（価格・株数が判明している場合のみ）
+    if (action.quantity && action.price) {
+      const qty = action.quantity
+      const price = action.price
+      const evalAmount = qty * price
+
+      const baseHoldingQuery = adminSupabase
+        .from('holdings')
+        .select('*')
+        .eq('account_type', action.account_type ?? 'tokutei')
+      const holdingFinal = action.ticker
+        ? baseHoldingQuery.eq('ticker', action.ticker)
+        : baseHoldingQuery.ilike('name', `%${action.name}%`)
+      const { data: existing } = await holdingFinal.maybeSingle()
+
+      if (existing) {
+        const prevQty = Number(existing.quantity ?? 0)
+        const prevPurchase = Number(existing.purchase_price ?? price)
+        const newQty = prevQty + qty
+        const newAvg = newQty > 0 ? (prevQty * prevPurchase + qty * price) / newQty : price
+        const newEval = newQty * price
+        await adminSupabase.from('holdings').update({
+          quantity: newQty,
+          purchase_price: Math.round(newAvg),
+          current_price: price,
+          evaluation_amount: newEval,
+          unrealized_gain: Math.round(newEval - newQty * newAvg),
+          updated_at: new Date().toISOString(),
+        }).eq('id', existing.id)
+        logs.push(`✅ 保有「${action.name}」追加購入で更新（${prevQty}株→${newQty}株 平均@${Math.round(newAvg).toLocaleString()}円）`)
+      } else {
+        await adminSupabase.from('holdings').insert({
+          name: action.name,
+          ticker: action.ticker ?? '',
+          account_type: action.account_type ?? 'tokutei',
+          asset_type: 'stock',
+          quantity: qty,
+          purchase_price: price,
+          current_price: price,
+          evaluation_amount: evalAmount,
+          unrealized_gain: 0,
+          unrealized_gain_pct: 0,
+        })
+        logs.push(`✅ 保有「${action.name}」新規追加（${qty}株 @${price.toLocaleString()}円 計${Math.round(evalAmount / 10000)}万円）`)
+      }
+    } else {
+      logs.push(`⚠️ 株数・価格が不明のため保有は手動更新してください`)
+    }
+  }
+
+  if (action.action === 'sell_executed') {
+    // 売り注文を約定済みに更新
+    const baseOrderQuery = adminSupabase
+      .from('orders')
+      .update({ status: 'executed', updated_at: new Date().toISOString() })
+      .eq('status', 'active')
+      .eq('order_type', 'sell')
+    const orderFinal = action.ticker
+      ? baseOrderQuery.eq('ticker', action.ticker)
+      : baseOrderQuery.ilike('name', `%${action.name}%`)
+    const { error: orderErr } = await orderFinal
+    if (!orderErr) logs.push(`✅ 売り注文「${action.name}」を約定済みに更新`)
+
+    // 保有を削除
+    const baseDeleteQuery = adminSupabase.from('holdings')
+    if (action.ticker) {
+      await baseDeleteQuery.delete().eq('ticker', action.ticker)
+    } else {
+      await baseDeleteQuery.delete().ilike('name', `%${action.name}%`)
+    }
+    logs.push(`✅ 保有「${action.name}」を売却済みとして削除`)
+  }
+
+  return logs
+}
+
 // ─── メインハンドラ ───────────────────────────────────────────────
 export async function POST(req: Request) {
   const body = await req.json()
   const { question, mode, round1, history, imageData, imageType } = body
   try {
 
-  const [realtimePrices, confirmedDecisions] = await Promise.all([
+  const [realtimePrices, confirmedDecisions, detectedAction] = await Promise.all([
     question ? fetchMentionedPrices(question) : Promise.resolve({}),
     mode === 'main' && history?.length >= 8
       ? extractConfirmedDecisions(history)
       : Promise.resolve(''),
+    mode === 'main' ? detectPortfolioAction(question ?? '') : Promise.resolve({ action: 'none' as const }),
   ])
+
+  // 約定処理を先に実行してからコンテキスト取得（更新後データをAIに渡す）
+  const actionsLog = await executePortfolioAction(detectedAction)
 
   const context = await getPortfolioContext(realtimePrices)
 
@@ -263,7 +392,7 @@ export async function POST(req: Request) {
       system: MAIN_SYSTEM,
       messages: priorMessages,
     })
-    return NextResponse.json({ content })
+    return NextResponse.json({ content, actionsLog })
   }
 
   if (mode === 'round1') {

@@ -55,6 +55,7 @@ interface Message {
   content: string
   subMessages?: SubMessage[]
   prices?: Record<string, number>  // AI返答内の銘柄のリアルタイム株価
+  actionsLog?: string[]             // 約定検知による自動更新ログ
 }
 
 interface Session {
@@ -85,6 +86,27 @@ async function fetchPricesFromAiResponse(text: string): Promise<Record<string, n
   } catch {
     return {}
   }
+}
+
+function ActionsLogCard({ logs }: { logs: string[] }) {
+  if (!logs || logs.length === 0) return null
+  return (
+    <div style={{
+      marginTop: 8,
+      padding: '8px 12px',
+      background: 'rgba(34,197,94,0.08)',
+      border: '1px solid rgba(34,197,94,0.35)',
+      borderRadius: 10,
+      fontSize: 12,
+    }}>
+      <div style={{ color: '#22c55e', marginBottom: 4, fontSize: 11, fontWeight: 600 }}>
+        🔄 ポートフォリオ自動更新
+      </div>
+      {logs.map((log, i) => (
+        <div key={i} style={{ color: 'var(--text)', lineHeight: 1.6 }}>{log}</div>
+      ))}
+    </div>
+  )
 }
 
 function PriceCard({ prices }: { prices: Record<string, number> }) {
@@ -307,7 +329,7 @@ export default function ChatPage() {
         })
         const data = await res.json()
         const prices = await fetchPricesFromAiResponse(data.content)
-        const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content, prices }
+        const aiMsg: Message = { role: 'assistant', persona: 'main', content: data.content, prices, actionsLog: data.actionsLog ?? [] }
         const finalMessages = [...nextMessages, aiMsg]
         setMessages(finalMessages)
         saveSession(finalMessages, sessionId, question).then(id => { if (!sessionId) setSessionId(id) })
@@ -544,6 +566,7 @@ export default function ChatPage() {
                 <div style={{ background: 'var(--surface)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '4px 16px 16px 16px', padding: '14px 16px', fontSize: 14, lineHeight: 1.8, color: 'var(--text)' }}>
                   {renderMarkdown(msg.content)}
                 </div>
+                {msg.actionsLog && msg.actionsLog.length > 0 && <ActionsLogCard logs={msg.actionsLog} />}
                 {msg.prices && Object.keys(msg.prices).length > 0 && <PriceCard prices={msg.prices} />}
               </div>
             )
