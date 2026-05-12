@@ -35,7 +35,7 @@ export async function fetchTradingVolumeRankings(): Promise<RankingItem[]> {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(3000),
     })
 
     if (!res.ok) return []
@@ -91,7 +91,7 @@ export async function fetchStopUpStocks(): Promise<StopUpStock[]> {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(3000),
     })
 
     if (!res.ok) return []
@@ -142,7 +142,7 @@ export async function fetchHotStocks(): Promise<HotStock[]> {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(3000),
     })
 
     if (!res.ok) return []
