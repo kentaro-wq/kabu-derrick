@@ -109,7 +109,7 @@ export async function POST() {
   const prompt = `${context}\n\n${instruction}`
 
   const text = await geminiGenerate({
-    model: 'gemini-1.5-flash-8b',
+    model: 'gemini-2.0-flash-lite',
     system: 'あなたは日本語の資産運用アドバイザーです。回答は簡潔かつ論理的に、JSON形式で正確に出力してください。',
     maxTokens: 2048,
     timeoutMs: 20000,
