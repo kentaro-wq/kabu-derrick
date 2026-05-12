@@ -4,7 +4,7 @@ export const maxDuration = 60
 import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
 import { getNisaStatus } from '@/lib/nisa'
-import { fetchMarketStats } from '@/lib/kabutan'
+import { fetchMarketStats, fetchMultipleStockInfo } from '@/lib/kabutan'
 
 function toMan(yen: number) {
   return `${Math.round(yen / 10000)}万円`
@@ -30,17 +30,26 @@ export async function POST() {
     fetchMarketStats().catch(() => null),
   ])
 
+  // 個別株の株探データを並列取得
+  const holdings = holdingsRes.data ?? []
+  const orders = ordersRes.data ?? []
+  const allTickers = [
+    ...holdings.map((h: { ticker: string }) => h.ticker),
+    ...orders.filter((o: { order_type: string; status: string }) => o.order_type === 'buy' && o.status === 'active')
+      .map((o: { ticker: string }) => o.ticker),
+  ]
+  const stockInfoMap: Record<string, import('@/lib/kabutan').StockInfo> = await fetchMultipleStockInfo(allTickers).catch(() => ({}))
+
   const profile = profileRes.data
   if (!profile) {
     return NextResponse.json({ error: 'プロフィールが未設定です。' }, { status: 400 })
   }
 
-  const holdings = holdingsRes.data ?? []
-  const orders = ordersRes.data ?? []
   const tsumitate = tsumitateRes.data ?? []
   const policy = policyRes.data?.content ?? ''
   const rules = rulesRes.data ?? []
-  const nisaStatus = getNisaStatus(profile)
+  const tsumitateMonthly = tsumitate.reduce((s: number, t: { monthly_amount: number }) => s + (t.monthly_amount ?? 0), 0)
+  const nisaStatus = getNisaStatus(profile, tsumitateMonthly)
   const totalAsset = holdings.reduce((sum, h) => sum + (h.evaluation_amount ?? 0), 0)
 
   let ctx = `【NISA残枠】成長枠:${toMan(nisaStatus.growthRemaining)}(残${nisaStatus.growthMonthsLeft}ヶ月,月${toMan(nisaStatus.growthMonthlyTarget)}) つみたて:${toMan(nisaStatus.tsumitateRemaining)}(残${nisaStatus.tsumitateMonthsLeft}ヶ月,月${toMan(nisaStatus.tsumitateMonthlyTarget)})\n`
@@ -49,13 +58,39 @@ export async function POST() {
   if (policy) ctx += `【投資方針】${policy.slice(0, 300)}\n`
 
   ctx += `【保有銘柄】\n`
-  holdings.forEach(h => {
+  holdings.forEach((h: { name: string; ticker: string; account_type: string; evaluation_amount: number | null; unrealized_gain: number | null }) => {
     const gain = h.unrealized_gain != null ? `損益${h.unrealized_gain >= 0 ? '+' : ''}${toMan(h.unrealized_gain)}` : ''
-    ctx += `・${h.name}(${formatAccountType(h.account_type)}) 評価${toMan(h.evaluation_amount ?? 0)} ${gain}\n`
+    const si = stockInfoMap[h.ticker]
+    let siStr = ''
+    if (si) {
+      const parts: string[] = []
+      if (si.price) parts.push(`株価${si.price.toLocaleString()}円`)
+      if (si.changePct != null) parts.push(`(${si.changePct >= 0 ? '+' : ''}${si.changePct}%)`)
+      if (si.per != null) parts.push(`PER${si.per}`)
+      if (si.pbr != null) parts.push(`PBR${si.pbr}`)
+      if (si.dividendYield != null) parts.push(`配当${si.dividendYield}%`)
+      if (si.revenueGrowthPct != null) parts.push(`売上前期比${si.revenueGrowthPct >= 0 ? '+' : ''}${si.revenueGrowthPct}%`)
+      if (si.profitGrowthPct != null) parts.push(`経常益前期比${si.profitGrowthPct >= 0 ? '+' : ''}${si.profitGrowthPct}%`)
+      if (si.dps != null) parts.push(`1株配当${si.dps}円予想`)
+      if (parts.length > 0) siStr = `  [${parts.join(' ')}]`
+    }
+    ctx += `・${h.name}(${formatAccountType(h.account_type)}) 評価${toMan(h.evaluation_amount ?? 0)} ${gain}${siStr}\n`
   })
 
   if (orders.length > 0) {
-    ctx += `【注文中】${orders.map(o => `${o.name}${o.order_type === 'sell' ? '売' : '買'}${o.price}円×${o.quantity}株 期限${o.deadline}`).join(' / ')}\n`
+    ctx += `【注文中】\n`
+    orders.forEach((o: { name: string; ticker: string; order_type: string; price: number; quantity: number; deadline: string }) => {
+      const si = stockInfoMap[o.ticker]
+      let siStr = ''
+      if (si) {
+        const parts: string[] = []
+        if (si.price) parts.push(`現在値${si.price.toLocaleString()}円`)
+        if (si.per != null) parts.push(`PER${si.per}`)
+        if (si.dividendYield != null) parts.push(`配当${si.dividendYield}%`)
+        if (parts.length > 0) siStr = `  [${parts.join(' ')}]`
+      }
+      ctx += `・${o.name}${o.order_type === 'sell' ? '売' : '買'}${o.price}円×${o.quantity}株 期限${o.deadline}${siStr}\n`
+    })
   }
 
   if (tsumitate.length > 0) {
