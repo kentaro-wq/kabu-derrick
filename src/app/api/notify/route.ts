@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
-import { sendLineMessage, formatMorningReport } from '@/lib/line'
+import { sendLineMessage, formatImportantNotification } from '@/lib/line'
+import { getNisaStatus } from '@/lib/nisa'
 
 function daysUntil(dateStr: string): number {
   const today = new Date()
@@ -15,6 +16,9 @@ export async function POST(req: Request) {
   if (authHeader !== `Bearer ${process.env.APP_SECRET}`) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
+
+  const url = new URL(req.url)
+  const isTest = url.searchParams.get('test') === 'true'
 
   const [holdingsRes, ordersRes, profileRes] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
@@ -41,18 +45,47 @@ export async function POST(req: Request) {
     })
 
   if (profile) {
-    const nisaRemaining = profile.nisa_growth_limit - profile.nisa_growth_used
-    if (nisaRemaining > 0) {
-      const monthsLeft = 12 - new Date().getMonth()
-      const monthlyTarget = Math.round(nisaRemaining / monthsLeft)
-      if (monthsLeft <= 3) {
-        alerts.push(`NISA成長枠 残り${nisaRemaining.toLocaleString()}円 (月${monthlyTarget.toLocaleString()}円ペース)`)
-      }
+    const nisaStatus = getNisaStatus(profile)
+    if (nisaStatus.growthRemaining > 0 && nisaStatus.growthMonthsLeft <= 4) {
+      alerts.push(`NISA成長枠 残り${nisaStatus.growthRemaining.toLocaleString()}円（残り${nisaStatus.growthMonthsLeft}ヶ月、月${nisaStatus.growthMonthlyTarget.toLocaleString()}円ペース）`)
+    }
+    if (nisaStatus.tsumitateRemaining > 0 && nisaStatus.tsumitateMonthsLeft <= 4) {
+      alerts.push(`つみたてNISA残り${nisaStatus.tsumitateRemaining.toLocaleString()}円（残り${nisaStatus.tsumitateMonthsLeft}ヶ月、月${nisaStatus.tsumitateMonthlyTarget.toLocaleString()}円ペース）`)
     }
   }
 
-  const message = formatMorningReport({ totalAssets, totalGain, activeOrders, alerts })
-  const sent = await sendLineMessage(message)
+  const hasImportantEvents = alerts.length > 0 || activeOrders.some(o => o.daysLeft <= 7)
+  const date = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
 
-  return NextResponse.json({ success: sent, message })
+  if (!isTest && !hasImportantEvents) {
+    return NextResponse.json({ success: false, skipped: true, message: '重要な通知はありませんでした' })
+  }
+
+  let message: string
+  if (isTest) {
+    if (hasImportantEvents) {
+      message = formatImportantNotification({
+        title: '重要通知（テスト）',
+        summary: '現在の重要アラートです。',
+        details: [...alerts],
+      })
+    } else {
+      message = `🔧 マイ株デリック LINE送信テスト\n${date}\n\nLINE通知が正常に届いています。`
+    }
+  } else {
+    message = formatImportantNotification({
+      title: '重要通知',
+      summary: '現在の重要アラートです。',
+      details: [...alerts],
+    })
+  }
+
+  const sent = await sendLineMessage(message)
+  return NextResponse.json({
+    success: sent,
+    skipped: !hasImportantEvents && !isTest,
+    totalAssets,
+    totalGain,
+    message,
+  })
 }

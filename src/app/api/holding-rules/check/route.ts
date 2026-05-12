@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
+import { getNisaStatus } from '@/lib/nisa'
 
 type CustomRule = { label: string; value: string }
 
@@ -29,6 +30,11 @@ export async function POST() {
 
   const portfolioAlerts: string[] = []
 
+  const nisaHoldings = holdings.filter(h => ['nisa_growth', 'nisa_tsumitate', 'old_tsumitate'].includes(h.account_type))
+  const tokuteiHoldings = holdings.filter(h => h.account_type === 'tokutei')
+  const nisaEvaluation = nisaHoldings.reduce((sum, h) => sum + (h.evaluation_amount ?? 0), 0)
+  const tokuteiEvaluation = tokuteiHoldings.reduce((sum, h) => sum + (h.evaluation_amount ?? 0), 0)
+
   if (totalGainPct <= -20) {
     portfolioAlerts.push(`🚨 ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%に達しています。損切りルールを確認してください。`)
   } else if (totalGainPct <= -10) {
@@ -44,6 +50,16 @@ export async function POST() {
         portfolioAlerts.push(`⚠️ 集中注意: ${h.name}が全体の${share.toFixed(0)}%を占めています`)
       }
     })
+  }
+
+  if (profile) {
+    const nisaStatus = getNisaStatus(profile)
+    if (nisaStatus.growthRemaining > 0 && nisaStatus.growthMonthsLeft <= 4) {
+      portfolioAlerts.push(`🟦 NISA成長枠 残り${nisaStatus.growthRemaining.toLocaleString()}円、残り${nisaStatus.growthMonthsLeft}ヶ月で月${nisaStatus.growthMonthlyTarget.toLocaleString()}円ペース`)
+    }
+    if (nisaStatus.tsumitateRemaining > 0 && nisaStatus.tsumitateMonthsLeft <= 4) {
+      portfolioAlerts.push(`🟦 つみたてNISA残り${nisaStatus.tsumitateRemaining.toLocaleString()}円、残り${nisaStatus.tsumitateMonthsLeft}ヶ月で月${nisaStatus.tsumitateMonthlyTarget.toLocaleString()}円ペース`)
+    }
   }
 
   const ruleTexts = rules.map(r => {
@@ -103,6 +119,15 @@ ${ruleTexts}
   const hasIndividualAlert = result.triggered.length > 0
   const hasPortfolioAlert = portfolioAlerts.length > 0
 
+  const accountLabel = (type: string) => {
+    if (type === 'nisa_growth') return 'NISA成長'
+    if (type === 'nisa_tsumitate') return 'つみたてNISA'
+    if (type === 'old_tsumitate') return '旧つみたてNISA'
+    if (type === 'tokutei') return '特定'
+    if (type === 'dc') return 'DC'
+    return '未設定'
+  }
+
   if (hasIndividualAlert || hasPortfolioAlert) {
     const totalAssets = totalEval + (profile?.bank_balance ?? 0) + (profile?.dc_balance ?? 0)
     const gainSign = totalGain >= 0 ? '+' : ''
@@ -118,7 +143,9 @@ ${ruleTexts}
     if (hasIndividualAlert) {
       lineMsg += `\n【銘柄別アクション要】\n`
       result.triggered.forEach(t => {
-        lineMsg += `▶ ${t.name}（${t.ticker}）\n${t.reason}\n\n`
+        const h = holdingMap.get(t.ticker)
+        const accountTag = h ? `（${accountLabel(h.account_type)}）` : ''
+        lineMsg += `▶ ${t.name}（${t.ticker}） ${accountTag}\n${t.reason}\n\n`
       })
     }
 
@@ -134,6 +161,8 @@ ${ruleTexts}
       totalGainPct: Math.round(totalGainPct * 100) / 100,
       totalGain,
       totalEval,
+      nisaEvaluation,
+      tokuteiEvaluation,
     },
     checkedAt: new Date().toISOString(),
   })

@@ -1,6 +1,7 @@
 export type AccountType =
   | 'nisa_growth'
   | 'nisa_tsumitate'
+  | 'old_tsumitate'
   | 'nisa_tsumitate_old'
   | 'tokutei'
   | 'dc'
@@ -59,6 +60,14 @@ export interface Profile {
   nisa_tsumitate_limit: number
   line_user_id: string | null
   updated_at: string
+}
+
+export interface StrategyProposal {
+  headline: string
+  nisaStrategy: string
+  tokuteiStrategy: string
+  nextActions: string[]
+  riskNotes: string
 }
 
 export interface PortfolioSnapshot {

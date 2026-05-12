@@ -3,6 +3,7 @@ import { claudeGenerate, ClaudeMessage } from '@/lib/claude'
 import { geminiGenerate } from '@/lib/gemini' // orders/parse等の画像解析で引き続き使用
 import { adminSupabase } from '@/lib/supabase'
 import { fetchMentionedPrices } from '@/lib/stock-price'
+import { fetchMarketStats } from '@/lib/kabutan'
 
 // ─── 共通禁止ルール ───────────────────────────────────────────────
 // BANNED_PHRASES: MAIN_SYSTEM・全ペルソナで共通使用
@@ -54,6 +55,13 @@ ${BANNED_PHRASES}
 - 間違いを修正するときは「修正:」と書いてすぐ正しい内容へ。謝罪なし
 - コンテキストにある情報（保有目的・売買ルール・合意事項）をユーザーに再確認・再説明させない
 
+# 市場データの活用
+- ストップ高銘柄が多い = 市場全体が強気 = 上昇トレンド継続のサイン
+- 売買代金ランキング上位の新規銘柄 = 機関投資家の参入兆候 = 仕込みチャンス検討
+- ホットストック（約定回数多い銘柄） = 流動性高い ＆ ボラティリティ大きい傾向
+- 市場心理が「強気」の日は、個別株の上値期待が高まる傾向
+- 保有銘柄が売買代金ランキングに入れば「注目度上昇」のサイン
+
 # 役割
 投資アドバイザー。守りの分析家・成長論者・逆張り屋・長期思考家の視点を統合し、
 山田さん（50歳）の個別株投資をサポートする。コンテキストを全て読んだうえで回答すること。
@@ -62,12 +70,13 @@ ${PRICE_RULES}`
 
 // ─── ポートフォリオコンテキスト生成 ─────────────────────────────
 async function getPortfolioContext(realtimePrices?: Record<string, number>): Promise<string> {
-  const [holdingsRes, ordersRes, tsumitateRes, policyRes, rulesRes] = await Promise.all([
+  const [holdingsRes, ordersRes, tsumitateRes, policyRes, rulesRes, marketStats] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     adminSupabase.from('tsumitate_settings').select('*'),
     adminSupabase.from('investment_policy').select('content').limit(1).single(),
     adminSupabase.from('holding_rules').select('ticker,name,purpose,policy_basis,sell_conditions,dividend_notes,timeline_notes,raw_agreement').eq('is_active', true),
+    fetchMarketStats().catch(() => null),
   ])
   const holdings = holdingsRes.data ?? []
   const orders = ordersRes.data ?? []
@@ -135,6 +144,38 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
     orders.forEach(o => {
       ctx += `・${o.name} ${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 ${o.quantity}株 期限${o.deadline}\n`
     })
+  }
+
+  // 市場統計の追加
+  if (marketStats) {
+    ctx += `\n【市場センチメント・ホットトピック】`
+    ctx += `\n・市場心理: ${
+      marketStats.marketSentiment === 'very-bullish' ? '非常に強気（ストップ高30銘柄以上）' :
+      marketStats.marketSentiment === 'bullish' ? '強気（ストップ高15銘柄以上）' :
+      marketStats.marketSentiment === 'neutral' ? 'ニュートラル' : '弱気'
+    }`
+    
+    if (marketStats.stopUpCount > 0) {
+      ctx += `\n・ストップ高銘柄: ${marketStats.stopUpCount}銘柄`
+      if (marketStats.stopUpStocks && marketStats.stopUpStocks.length > 0) {
+        const topStopUp = marketStats.stopUpStocks.slice(0, 5)
+        ctx += ` (${topStopUp.map(s => `${s.ticker}:${s.changePct.toFixed(1)}%`).join(' ')})`
+      }
+    }
+
+    if (marketStats.tradingVolumeRankings && marketStats.tradingVolumeRankings.length > 0) {
+      ctx += `\n・売買代金ランキング Top 5:\n`
+      marketStats.tradingVolumeRankings.slice(0, 5).forEach((r, i) => {
+        ctx += `  ${i + 1}. ${r.ticker}(${r.name.slice(0, 8)}): ${r.changePct.toFixed(1)}% ${r.amount || ''}\n`
+      })
+    }
+
+    if (marketStats.hotStocks && marketStats.hotStocks.length > 0) {
+      ctx += `\n・活況銘柄 Top 5:\n`
+      marketStats.hotStocks.slice(0, 5).forEach((h, i) => {
+        ctx += `  ${i + 1}. ${h.ticker}(${h.name.slice(0, 8)}): ${h.changePct.toFixed(1)}%\n`
+      })
+    }
   }
 
   return ctx

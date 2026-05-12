@@ -105,8 +105,15 @@ export default function Dashboard() {
 
   const nisaUsed = profile?.nisa_growth_used ?? 0
   const nisaLimit = profile?.nisa_growth_limit ?? 2400000
-  const nisaRemaining = nisaLimit - nisaUsed
+  const nisaRemaining = Math.max(0, nisaLimit - nisaUsed)
   const nisaPct = Math.round((nisaUsed / nisaLimit) * 100)
+  const nisaMonthsLeft = Math.max(1, 12 - new Date().getMonth())
+  const nisaMonthlyTarget = Math.ceil(nisaRemaining / nisaMonthsLeft)
+  const nisaPriorityMessage = nisaRemaining > 0
+    ? nisaMonthsLeft <= 4
+      ? `NISA優先で枠を使い切る必要があります。残り${nisaMonthsLeft}ヶ月で月${nisaMonthlyTarget.toLocaleString()}円の投資ペース。`
+      : `NISA枠の残り${(nisaRemaining / 10000).toFixed(1)}万円。年内に使い切る計画を。`
+    : '今年のNISA枠は使い切り済みです。'
 
   const activeOrders = orders.filter(o => o.status === 'active' && o.deadline)
   const urgentOrders = activeOrders.filter(o => daysUntil(o.deadline!) <= 7)
@@ -223,6 +230,14 @@ export default function Dashboard() {
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
           年間上限 {(nisaLimit / 10000).toFixed(0)}万円
         </div>
+        <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(59,130,246,0.08)', borderRadius: 10, fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
+          <strong style={{ color: '#2563eb' }}>NISA優先</strong> {nisaPriorityMessage}
+        </div>
+        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+          <Link href="/strategy" style={{ color: '#2563eb', textDecoration: 'none', fontSize: 13, fontWeight: 700 }}>
+            📈 戦略提案を確認する
+          </Link>
+        </div>
       </div>
 
       {/* 総資産推移グラフ */}
@@ -302,7 +317,7 @@ export default function Dashboard() {
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
           { href: '/rules', label: 'ルール', icon: '📌' },
-          { href: '/chat', label: 'AI相談', icon: '💬' },
+          { href: '/strategy', label: '戦略', icon: '🧭' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (
           <Link key={item.href} href={item.href} style={{

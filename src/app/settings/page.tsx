@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import type { Profile } from '@/types'
+import type { Profile, StrategyProposal } from '@/types'
 
 interface TsumitateItem {
   id: string
@@ -18,6 +18,10 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [notifying, setNotifying] = useState(false)
   const [notifyResult, setNotifyResult] = useState<string | null>(null)
+  const [strategyLoading, setStrategyLoading] = useState(false)
+  const [strategyProposal, setStrategyProposal] = useState<StrategyProposal | null>(null)
+  const [strategyResult, setStrategyResult] = useState<string | null>(null)
+  const [strategyError, setStrategyError] = useState<string | null>(null)
   const [tsumitate, setTsumitate] = useState<TsumitateItem[]>([])
   const [tsForm, setTsForm] = useState(TSUMITATE_EMPTY)
   const [tsAdding, setTsAdding] = useState(false)
@@ -60,10 +64,41 @@ export default function SettingsPage() {
   const testNotify = async () => {
     setNotifying(true)
     setNotifyResult(null)
-    const res = await fetch('/api/notify', { method: 'POST', headers: { Authorization: `Bearer ${process.env.NEXT_PUBLIC_APP_SECRET ?? ''}` } })
+    const res = await fetch('/api/notify?test=true', { method: 'POST', headers: { Authorization: `Bearer ${process.env.NEXT_PUBLIC_APP_SECRET ?? ''}` } })
     const data = await res.json()
-    setNotifyResult(data.success ? '✅ LINE送信成功' : '❌ 送信失敗（LINE設定を確認）')
+    if (data.success) {
+      setNotifyResult('✅ LINE送信成功')
+    } else if (data.skipped) {
+      setNotifyResult('ℹ️ 重要な通知はありませんでした（LINE接続は確認済み）')
+    } else {
+      setNotifyResult('❌ 送信失敗（LINE設定を確認）')
+    }
     setNotifying(false)
+  }
+
+  const generateStrategyProposal = async () => {
+    setStrategyLoading(true)
+    setStrategyError(null)
+    setStrategyProposal(null)
+    setStrategyResult(null)
+    try {
+      const res = await fetch('/api/strategy/proposal', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setStrategyError(data.error ?? '戦略提案の生成に失敗しました。')
+      } else if (data.proposal) {
+        if (typeof data.proposal === 'object' && data.proposal !== null && !Array.isArray(data.proposal)) {
+          setStrategyProposal(data.proposal as StrategyProposal)
+        } else {
+          setStrategyResult(JSON.stringify(data.proposal, null, 2))
+        }
+      } else {
+        setStrategyError('不明な応答を受け取りました。')
+      }
+    } catch {
+      setStrategyError('通信エラーが発生しました。')
+    }
+    setStrategyLoading(false)
   }
 
   if (!profile) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: 'var(--muted)' }}>読み込み中...</div>
@@ -173,6 +208,48 @@ export default function SettingsPage() {
         {notifyResult && <div style={{ marginTop: 8, fontSize: 13, color: notifyResult.startsWith('✅') ? 'var(--green)' : 'var(--red)', textAlign: 'center' }}>{notifyResult}</div>}
       </div>
 
+      {/* 戦略提案 */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 16, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 8 }}>現状を踏まえた戦略提案</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
+          現在の保有・NISA状況をもとに、優先すべき戦略をAIが提案します。
+        </div>
+        <button onClick={generateStrategyProposal} disabled={strategyLoading} style={{ width: '100%', padding: 12, borderRadius: 10, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', fontSize: 14, cursor: 'pointer' }}>
+          {strategyLoading ? '生成中...' : '戦略提案を生成する'}
+        </button>
+        {strategyError && <div style={{ marginTop: 8, fontSize: 13, color: '#f87171', textAlign: 'center' }}>{strategyError}</div>}
+        {strategyProposal && (
+          <div style={{ marginTop: 12, display: 'grid', gap: 12, background: 'var(--surface2)', padding: 14, borderRadius: 12, color: 'var(--text)' }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{strategyProposal.headline}</div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>NISA優先戦略</div>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{strategyProposal.nisaStrategy}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>特定口座補完戦略</div>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{strategyProposal.tokuteiStrategy}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>次のアクション</div>
+              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+                {strategyProposal.nextActions.map((action, index) => (
+                  <li key={index}>{action}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>リスク注意点</div>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{strategyProposal.riskNotes}</div>
+            </div>
+          </div>
+        )}
+        {strategyResult && (
+          <pre style={{ marginTop: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.5, background: 'var(--surface2)', padding: 12, borderRadius: 10, color: 'var(--text)' }}>
+            {strategyResult}
+          </pre>
+        )}
+      </div>
+
       {/* 3000万円進捗 */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 16 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 10 }}>目標進捗（預金＋DC）</div>
@@ -189,7 +266,7 @@ export default function SettingsPage() {
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
           { href: '/rules', label: 'ルール', icon: '📌' },
-          { href: '/chat', label: 'AI相談', icon: '💬' },
+          { href: '/strategy', label: '戦略', icon: '🧭' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (
           <Link key={item.href} href={item.href} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: item.href === '/settings' ? 'var(--accent)' : 'var(--muted)', textDecoration: 'none', fontSize: 10, fontWeight: 500, padding: '4px 10px' }}>

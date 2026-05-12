@@ -21,6 +21,22 @@ export async function sendLineMessage(message: string): Promise<boolean> {
   }
 }
 
+export function formatImportantNotification(params: {
+  title: string
+  summary: string
+  details: string[]
+}): string {
+  const { title, summary, details } = params
+  const date = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
+  let msg = `📣 マイ株デリック ${title}\n${date}\n\n`
+  if (summary) msg += `${summary}\n\n`
+  if (details.length > 0) {
+    msg += details.map(d => `・${d}`).join('\n') + '\n\n'
+  }
+  msg += `アプリで確認 →`
+  return msg
+}
+
 export function formatMorningReport(params: {
   totalAssets: number
   totalGain: number
