@@ -59,21 +59,16 @@ JSON形式のみで返答(前後に余分なテキスト不要):
 {"headline":"30字以内","nisaStrategy":"50字以内","tokuteiStrategy":"50字以内","nextActions":["行動1","行動2","行動3"],"riskNotes":"30字以内"}`
 
   const text = await geminiGenerate({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     system: '日本語の投資アドバイザー。JSONのみ返答。',
     maxTokens: 800,
     timeoutMs: 15000,
+    disableThinking: true,
     messages: [{ role: 'user', parts: [{ text: prompt }] }],
   })
 
   try {
-    // ```json ... ``` ブロックがあれば中身を取り出し、なければ最初の{...}を探す
-    const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-    const jsonStr = codeBlock ? codeBlock[1].trim() : (text.match(/\{[\s\S]*\}/) ?? [''])[0]
-    if (!jsonStr) {
-      return NextResponse.json({ error: 'AIの応答がJSON形式ではありません。', raw: text }, { status: 500 })
-    }
-    const proposal = JSON.parse(jsonStr)
+    const proposal = JSON.parse(text)
 
     try {
       const { error: insertError } = await adminSupabase.from('strategy_proposals').insert({
