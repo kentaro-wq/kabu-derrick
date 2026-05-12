@@ -217,32 +217,65 @@ type PortfolioAction =
   | { action: 'buy_executed'; name: string; ticker?: string | null; quantity: number | null; price: number | null; account_type: string }
   | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null }
 
-async function detectPortfolioAction(question: string): Promise<PortfolioAction> {
-  const keywords = [
-    // 注文
-    '注文した', '指値を入れた', '指値注文', '発注した', '注文入れた', '指値置いた', '買い注文', '売り注文', '注文を出した',
-    // 約定
-    '約定', '買えた', '購入した', '購入できた', '売れた', '売却した', '利確', '損切',
-  ]
-  if (!keywords.some(k => question.includes(k))) return { action: 'none' }
+async function detectPortfolioAction(
+  question: string,
+  history: Array<{ role: string; content: string }>
+): Promise<PortfolioAction> {
+  // 直近8ターン＋今回の発言を結合してキーワード判定
+  const recentMsgs = history.slice(-8)
+  const allText = [
+    ...recentMsgs.map(m => `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.content.slice(0, 300)}`),
+    `ユーザー: ${question}`,
+  ].join('\n')
 
-  // 今日から90日後をデフォルト期限に使う
+  // 「確定・完了」を示す言葉が直近にあるかを軽量チェック
+  const actionKeywords = [
+    '注文', '指値', '発注', '約定', '買えた', '購入', '売れた', '売却', '利確', '損切',
+    '入れた', '入れてきた', '置いてきた', 'してきた', 'しておいた', 'できた',
+  ]
+  if (!actionKeywords.some(k => allText.includes(k))) return { action: 'none' }
+
+  // 重複防止: DBの既存注文・保有を取得
+  const [ordersRes, holdingsRes] = await Promise.all([
+    adminSupabase.from('orders').select('name, ticker, price, quantity, order_type').eq('status', 'active'),
+    adminSupabase.from('holdings').select('name, ticker'),
+  ])
+  const existingOrders = (ordersRes.data ?? [])
+    .map(o => `${o.name} ${o.order_type === 'buy' ? '買い' : '売り'} ${o.price}円 ${o.quantity}株`)
+    .join(' / ')
+  const existingHoldings = (holdingsRes.data ?? []).map(h => h.name).join(' / ')
+
+  const today = new Date().toISOString().slice(0, 10)
   const defaultDeadline = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   try {
     const result = await claudeGenerate({
       model: 'claude-haiku-4-5-20251001',
-      maxTokens: 250,
+      maxTokens: 300,
       messages: [{
         role: 'user',
-        parts: [{ text: `以下のメッセージから株式取引情報をJSONで抽出。該当なければ {"action":"none"} を返す。
-注文した: {"action":"order_placed","name":"銘柄名","ticker":"4桁コードまたはnull","order_type":"buy|sell","price":指値価格またはnull,"quantity":株数またはnull,"account_type":"nisa_growth|tokutei","deadline":"YYYY-MM-DD形式の期限またはnull"}
+        parts: [{ text: `以下の会話から、ユーザーが実際に「完了・確定した」取引行動を1件だけJSONで抽出。
+
+【抽出ルール】
+- 「〜した」「〜してきた」「〜できた」「〜しておいた」など完了形のみ対象
+- 「〜しようかな」「〜どう思う？」「〜検討中」は対象外（まだ実行していない）
+- 会話の流れから銘柄・価格・株数・口座を推測してよい
+- 既に登録済みの内容は重複登録しない
+
+【登録済み注文（重複不可）】${existingOrders || 'なし'}
+【保有銘柄（売り約定の照合用）】${existingHoldings || 'なし'}
+
+【抽出形式】
+注文した: {"action":"order_placed","name":"銘柄名","ticker":"4桁コードまたはnull","order_type":"buy|sell","price":指値価格またはnull,"quantity":株数またはnull,"account_type":"nisa_growth|tokutei","deadline":"${defaultDeadline}"}
 買い約定: {"action":"buy_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull,"price":約定価格またはnull,"account_type":"nisa_growth|tokutei"}
 売り約定: {"action":"sell_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull}
-今日: ${new Date().toISOString().slice(0, 10)} / デフォルト期限: ${defaultDeadline}
+該当なし: {"action":"none"}
+
+今日: ${today}
 JSONのみ返答:
 
-${question}` }],
+【会話】
+${allText}` }],
       }],
     })
     const cleaned = result.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
@@ -379,7 +412,7 @@ export async function POST(req: Request) {
     mode === 'main' && history?.length >= 8
       ? extractConfirmedDecisions(history)
       : Promise.resolve(''),
-    mode === 'main' ? detectPortfolioAction(question ?? '') : Promise.resolve({ action: 'none' as const }),
+    mode === 'main' ? detectPortfolioAction(question ?? '', history ?? []) : Promise.resolve({ action: 'none' as const }),
   ])
 
   // 約定処理を先に実行してからコンテキスト取得（更新後データをAIに渡す）
