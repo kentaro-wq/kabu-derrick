@@ -11,19 +11,26 @@ export async function geminiGenerate({
   messages,
   maxTokens = 1000,
   timeoutMs = 25000,
+  disableThinking = false,
 }: {
   model?: string
   system?: string
   messages: GeminiMessage[]
   maxTokens?: number
   timeoutMs?: number
+  disableThinking?: boolean
 }): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set')
 
+  const generationConfig: Record<string, unknown> = { maxOutputTokens: maxTokens }
+  if (disableThinking) {
+    generationConfig.thinkingConfig = { thinkingBudget: 0 }
+  }
+
   const body: Record<string, unknown> = {
     contents: messages,
-    generationConfig: { maxOutputTokens: maxTokens },
+    generationConfig,
   }
   if (system) {
     body.system_instruction = { parts: [{ text: system }] }

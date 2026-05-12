@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server'
+
+export const maxDuration = 60
 import { geminiGenerate } from '@/lib/gemini'
 import { adminSupabase } from '@/lib/supabase'
 import { getNisaStatus } from '@/lib/nisa'
@@ -110,6 +112,8 @@ export async function POST() {
     model: 'gemini-2.5-flash',
     system: 'あなたは日本語の資産運用アドバイザーです。回答は簡潔かつ論理的に、JSON形式で正確に出力してください。',
     maxTokens: 4096,
+    timeoutMs: 55000,
+    disableThinking: true,
     messages: [{ role: 'user', parts: [{ text: prompt }] }],
   })
 
