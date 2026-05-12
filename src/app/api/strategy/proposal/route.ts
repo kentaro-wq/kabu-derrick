@@ -114,11 +114,13 @@ export async function POST() {
   })
 
   try {
-    const match = text.match(/\{[\s\S]*\}$/)
-    if (!match) {
+    // ```json ... ``` ブロックがあれば中身を取り出し、なければ最初の{...}を探す
+    const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    const jsonStr = codeBlock ? codeBlock[1].trim() : (text.match(/\{[\s\S]*\}/) ?? [''])[0]
+    if (!jsonStr) {
       return NextResponse.json({ error: 'AIの応答がJSON形式ではありません。', raw: text }, { status: 500 })
     }
-    const proposal = JSON.parse(match[0])
+    const proposal = JSON.parse(jsonStr)
 
     try {
       const { error: insertError } = await adminSupabase.from('strategy_proposals').insert({
