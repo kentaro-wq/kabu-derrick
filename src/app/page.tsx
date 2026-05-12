@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { Holding, Order, Profile } from '@/types'
+import type { Alert } from '@/app/api/alerts/route'
 
 function daysUntil(dateStr: string): number {
   const today = new Date(); today.setHours(0,0,0,0)
@@ -76,6 +77,7 @@ export default function Dashboard() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [tsumitate, setTsumitate] = useState<{ name: string; monthly_amount: number }[]>([])
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
+  const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -85,12 +87,14 @@ export default function Dashboard() {
       fetch('/api/profile').then(r => r.json()),
       fetch('/api/tsumitate').then(r => r.json()).catch(() => ({ settings: [] })),
       fetch('/api/snapshots').then(r => r.json()).catch(() => ({ snapshots: [] })),
-    ]).then(([h, o, p, t, s]) => {
+      fetch('/api/alerts').then(r => r.json()).catch(() => ({ alerts: [] })),
+    ]).then(([h, o, p, t, s, al]) => {
       setHoldings(Array.isArray(h) ? h : [])
       setOrders(Array.isArray(o) ? o : [])
       setProfile(p?.id ? p : null)
       setTsumitate(Array.isArray(t?.settings) ? t.settings : [])
       setSnapshots(Array.isArray(s?.snapshots) ? s.snapshots : [])
+      setAlerts(Array.isArray(al?.alerts) ? al.alerts : [])
       setLoading(false)
     })
   }, [])
@@ -172,18 +176,24 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* 緊急アラート */}
-      {urgentOrders.length > 0 && (
-        <div style={{ background: '#3b1515', border: '1px solid #7f1d1d', borderRadius: 12, padding: 14, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#f87171', marginBottom: 8 }}>⚠️ 要確認</div>
-          {urgentOrders.map(o => (
-            <div key={o.id} style={{ fontSize: 13, color: '#fca5a5', marginBottom: 4 }}>
-              {o.name} {o.order_type === 'sell' ? '売り' : '買い'}注文 — 期限まであと<strong>{daysUntil(o.deadline!)}日</strong>
-            </div>
-          ))}
-          <Link href="/orders" style={{ fontSize: 11, color: '#f87171', textDecoration: 'underline' }}>
-            注文を確認する →
-          </Link>
+      {/* アラート */}
+      {alerts.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+          {alerts.map(alert => {
+            const isHigh = alert.level === 'high'
+            const isMed = alert.level === 'medium'
+            const bg = isHigh ? '#3b1515' : isMed ? '#2d1e00' : '#1a1a2e'
+            const border = isHigh ? '#7f1d1d' : isMed ? '#78350f' : '#1e3a5f'
+            const titleColor = isHigh ? '#f87171' : isMed ? '#fbbf24' : '#60a5fa'
+            const bodyColor = isHigh ? '#fca5a5' : isMed ? '#fde68a' : '#93c5fd'
+            const icon = isHigh ? '🔴' : isMed ? '🟡' : '🔵'
+            return (
+              <div key={alert.id} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: titleColor }}>{icon} {alert.title}</div>
+                <div style={{ fontSize: 11, color: bodyColor, marginTop: 3 }}>{alert.body}</div>
+              </div>
+            )
+          })}
         </div>
       )}
 
