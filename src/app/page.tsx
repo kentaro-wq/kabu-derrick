@@ -115,6 +115,15 @@ export default function Dashboard() {
       : `NISA枠の残り${(nisaRemaining / 10000).toFixed(1)}万円。年内に使い切る計画を。`
     : '今年のNISA枠は使い切り済みです。'
 
+  // つみたてNISA残り（楽天と同じ: 利用済 + 利用予定を引く）
+  const tsumitateMonthly = tsumitate.reduce((s, t) => s + t.monthly_amount, 0)
+  const tsumitateMonthsLeft = Math.max(1, 12 - new Date().getMonth())
+  const tsumitateScheduled = tsumitateMonthly * tsumitateMonthsLeft
+  const tsumitateUsed = profile?.nisa_tsumitate_used ?? 0
+  const tsumitateLimit = profile?.nisa_tsumitate_limit ?? 1200000
+  const tsumitateRemaining = Math.max(0, tsumitateLimit - tsumitateUsed - tsumitateScheduled)
+  const tsumitatePct = Math.round(((tsumitateUsed + tsumitateScheduled) / tsumitateLimit) * 100)
+
   const activeOrders = orders.filter(o => o.status === 'active' && o.deadline)
   const urgentOrders = activeOrders.filter(o => daysUntil(o.deadline!) <= 7)
 
@@ -251,18 +260,37 @@ export default function Dashboard() {
       {/* NISA積立 */}
       {tsumitate.length > 0 && (
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 16, marginBottom: 14 }}>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>NISA積立（月次）</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>つみたてNISA枠（今年）</div>
+          {/* 残り枠表示 */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 8 }}>
+            <div>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>残り </span>
+              <span style={{ fontSize: 22, fontWeight: 700, color: '#34d399' }}>
+                {tsumitateRemaining.toLocaleString()}円
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)' }}>利用済 {(tsumitateUsed / 10000).toFixed(0)}万 / 予定 {(tsumitateScheduled / 10000).toFixed(0)}万</div>
+          </div>
+          <div style={{ height: 6, background: 'var(--surface2)', borderRadius: 99, overflow: 'hidden', marginBottom: 12 }}>
+            <div style={{ height: '100%', width: `${Math.min(100, tsumitatePct)}%`, background: '#10b981', borderRadius: 99 }} />
+          </div>
+          {/* 銘柄別積立額 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {tsumitate.map((t, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 13, color: 'var(--text)' }}>{t.name}</span>
-                <span style={{ fontSize: 14, fontWeight: 600, color: '#34d399' }}>月 {t.monthly_amount.toLocaleString()}円</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#34d399' }}>月 {t.monthly_amount.toLocaleString()}円</span>
               </div>
             ))}
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--muted)' }}>合計</span>
-              <span style={{ fontSize: 14, fontWeight: 700 }}>月 {tsumitate.reduce((s, t) => s + t.monthly_amount, 0).toLocaleString()}円</span>
-            </div>
+            {tsumitate.length > 1 && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>合計</span>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>月 {tsumitateMonthly.toLocaleString()}円</span>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+            年間上限 {(tsumitateLimit / 10000).toFixed(0)}万円
           </div>
         </div>
       )}
