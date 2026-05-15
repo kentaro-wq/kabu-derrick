@@ -94,9 +94,26 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   const now = new Date()
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
   const weekdays = ['日', '月', '火', '水', '木', '金', '土']
-  const dateStr = `${jst.getUTCFullYear()}年${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日（${weekdays[jst.getUTCDay()]}）`
+  const jstH = jst.getUTCHours()
+  const jstM = jst.getUTCMinutes()
+  const timeStr = `${String(jstH).padStart(2, '0')}:${String(jstM).padStart(2, '0')}`
+  const dateStr = `${jst.getUTCFullYear()}年${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日（${weekdays[jst.getUTCDay()]}） ${timeStr} JST`
+  const isWeekday = jst.getUTCDay() >= 1 && jst.getUTCDay() <= 5
+  const totalMin = jstH * 60 + jstM
+  const isMarketOpen = isWeekday && ((totalMin >= 9 * 60 && totalMin < 11 * 60 + 30) || (totalMin >= 12 * 60 + 30 && totalMin < 15 * 60 + 30))
+  const isPreMarket = isWeekday && totalMin >= 8 * 60 && totalMin < 9 * 60
+  const isAfterMarket = isWeekday && totalMin >= 15 * 60 + 30 && totalMin < 16 * 60
+  const marketStatus = !isWeekday
+    ? '🔴 休場（土日）'
+    : isPreMarket ? '🟡 取引前（寄付待ち）'
+    : isMarketOpen
+      ? (totalMin < 11 * 60 + 30 ? `🟢 前場（${11 * 60 + 30 - totalMin}分後に前引け）` : `🟢 後場（${15 * 60 + 30 - totalMin}分後に大引け）`)
+    : isAfterMarket ? '🟡 取引後（PTSあり）'
+    : totalMin >= 11 * 60 + 30 && totalMin < 12 * 60 + 30 ? '🟡 昼休み（後場待ち）'
+    : '🔴 時間外'
 
-  let ctx = `【今日の日付】${dateStr}
+  let ctx = `【現在日時】${dateStr}
+【市場状況】${marketStatus}
 
 【ユーザーの状況】
 ・山田さん、50歳（1975年生）、子ども小4
