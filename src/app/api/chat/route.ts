@@ -91,7 +91,14 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   const indexTotal = holdings.filter(h => !h.ticker || !/^\d{4}$/.test(h.ticker)).reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
   const stockTotal = holdings.filter(h => h.ticker && /^\d{4}$/.test(h.ticker)).reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
 
-  let ctx = `【ユーザーの状況】
+  const now = new Date()
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
+  const weekdays = ['日', '月', '火', '水', '木', '金', '土']
+  const dateStr = `${jst.getUTCFullYear()}年${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日（${weekdays[jst.getUTCDay()]}）`
+
+  let ctx = `【今日の日付】${dateStr}
+
+【ユーザーの状況】
 ・山田さん、50歳（1975年生）、子ども小4
 ・投資目標: 15年後（65歳）にDC別3,000万円
 ・投資経験: インデックス積立は長年のベテラン、個別株は2026年から開始
