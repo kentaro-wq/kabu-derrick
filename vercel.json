@@ -3,6 +3,14 @@
     {
       "path": "/api/market/update",
       "schedule": "40 6 * * 1-5"
+    },
+    {
+      "path": "/api/notify?type=morning",
+      "schedule": "30 23 * * 0-4"
+    },
+    {
+      "path": "/api/notify?type=evening",
+      "schedule": "45 6 * * 1-5"
     }
   ]
 }
