@@ -4,6 +4,7 @@ export type AccountType =
   | 'old_tsumitate'
   | 'nisa_tsumitate_old'
   | 'tokutei'
+  | 'mochikabu'
   | 'dc'
 
 export type AssetType = 'stock' | 'fund' | 'dc'
