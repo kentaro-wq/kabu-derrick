@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { claudeGenerate, ClaudeMessage } from '@/lib/claude'
 import { geminiGenerate } from '@/lib/gemini' // orders/parse等の画像解析で引き続き使用
 import { adminSupabase } from '@/lib/supabase'
-import { fetchMentionedPrices } from '@/lib/stock-price'
+import { fetchMentionedPrices, fetchPrice } from '@/lib/stock-price'
 import { fetchMarketStats } from '@/lib/kabutan'
 import { recalcNisaUsed } from '@/lib/nisa-sync'
 
@@ -172,9 +172,31 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   }
 
   if (orders.length > 0) {
-    ctx += `\n【執行中の注文】\n`
+    // 注文銘柄のうち保有銘柄にないものの現在値を取得
+    const holdingTickers = new Set(holdings.map(h => h.ticker).filter(Boolean))
+    const orderOnlyTickers = [...new Set(
+      orders.map(o => o.ticker).filter((t): t is string => !!t && /^\d{4}$/.test(t) && !holdingTickers.has(t))
+    )]
+    const orderPrices: Record<string, number> = {}
+    await Promise.all(
+      orderOnlyTickers.map(async ticker => {
+        const price = await fetchPrice(ticker)
+        if (price != null) orderPrices[ticker] = price
+      })
+    )
+
+    ctx += `\n【執行中の注文（現在値は株探/Yahoo Finance取得・この価格を使うこと）】\n`
     orders.forEach(o => {
-      ctx += `・${o.name} ${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 ${o.quantity}株 期限${o.deadline}\n`
+      const currentPrice = o.ticker && orderPrices[o.ticker]
+        ? `現在値${orderPrices[o.ticker].toLocaleString()}円 `
+        : (o.ticker && holdingTickers.has(o.ticker) ? '' : '現在値不明 ')
+      const diff = o.ticker && orderPrices[o.ticker] && o.price
+        ? (() => {
+            const pct = ((orderPrices[o.ticker] - o.price) / o.price * 100).toFixed(1)
+            return `(指値まで${parseFloat(pct) >= 0 ? '+' : ''}${pct}%) `
+          })()
+        : ''
+      ctx += `・${o.name}(${o.ticker ?? '-'}) ${o.order_type === 'sell' ? '売り' : '買い'}指値${o.price}円 ${o.quantity}株 期限${o.deadline} ${currentPrice}${diff}\n`
     })
   }
 
