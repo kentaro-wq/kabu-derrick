@@ -5,7 +5,7 @@ export async function GET() {
   try {
     const { data, error } = await adminSupabase
       .from('strategy_proposals')
-      .select('id, headline, nisa_strategy, tokutei_strategy, next_actions, risk_notes, created_at')
+      .select('id, headline, nisa_strategy, tokutei_strategy, next_actions, risk_notes, raw_response, created_at')
       .order('created_at', { ascending: false })
       .limit(10)
 
