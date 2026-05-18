@@ -134,7 +134,13 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
     const price = h.current_price != null ? `現在値${h.current_price.toLocaleString()}円` : '現在値不明'
     const evalMan = h.evaluation_amount != null ? `評価額${toMan(h.evaluation_amount)}` : '評価額不明'
     const gain = h.unrealized_gain != null ? `損益${h.unrealized_gain >= 0 ? '+' : ''}${toMan(h.unrealized_gain)}` : '損益不明'
-    ctx += `・${h.name}(${h.ticker ?? 'インデックス'}) ${h.account_type === 'tokutei' ? '特定口座' : 'NISA'}: ${price} ${evalMan} ${gain}\n`
+    const accountLabel =
+      h.account_type === 'tokutei' ? '特定口座' :
+      h.account_type === 'mochikabu' ? '持株会（売却には移管手続き必要・NISA・特定口座とは別管理）' :
+      h.account_type === 'nisa_growth' ? 'NISA成長枠' :
+      h.account_type === 'nisa_tsumitate' ? 'NISAつみたて枠' :
+      h.account_type ?? 'その他'
+    ctx += `・${h.name}(${h.ticker ?? 'インデックス'}) ${accountLabel}: ${price} ${evalMan} ${gain}\n`
   })
 
   if (realtimePrices && Object.keys(realtimePrices).length > 0) {
