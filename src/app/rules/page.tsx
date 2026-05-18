@@ -287,7 +287,7 @@ export default function RulesPage() {
                     ? <span style={{ fontSize: 10, color: 'var(--accent)', background: 'rgba(99,102,241,0.15)', padding: '2px 8px', borderRadius: 99 }}>{cnt}項目</span>
                     : <span style={{ fontSize: 10, color: 'var(--muted)' }}>未設定</span>
                   }
-                  <button onClick={e => { e.stopPropagation(); extractFromChat(h, cnt > 0) }} disabled={extracting === h.id}
+                  <button onClick={e => { e.stopPropagation(); extractFromChat(h, true) }} disabled={extracting === h.id}
                     title="チャット履歴から抽出"
                     style={{ fontSize: 11, padding: '3px 7px', borderRadius: 6, border: '1px solid rgba(245,158,11,0.4)', background: 'none', color: '#f59e0b', cursor: 'pointer' }}>
                     {extracting === h.id ? '⏳' : '📝'}

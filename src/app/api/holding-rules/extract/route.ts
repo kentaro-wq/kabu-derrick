@@ -24,8 +24,10 @@ export async function POST(req: Request) {
       .select('id, purpose, sell_conditions')
       .eq('ticker', ticker)
       .single()
-    if (existing?.purpose || existing?.sell_conditions) {
-      return NextResponse.json({ skipped: true, reason: '既存ルールあり' })
+    // 行が存在する場合はスキップ（内容が空でも再試行しない）
+    // → ページを開くたびに Gemini を呼び出すのを防ぐ
+    if (existing) {
+      return NextResponse.json({ skipped: true, reason: existing.purpose || existing.sell_conditions ? '既存ルールあり' : '抽出済み（内容なし）' })
     }
   }
 
@@ -92,7 +94,14 @@ ${chatText}
   }
 
   const hasContent = Object.values(extracted).some(v => v !== null && String(v).trim() !== '')
-  if (!hasContent) return NextResponse.json({ skipped: true, reason: '関連する取り決めが見つかりませんでした' })
+  if (!hasContent) {
+    // 内容は空でも行を作成しておく → 次回ページロード時に再試行されるのを防ぐ
+    await adminSupabase.from('holding_rules').upsert(
+      { ticker, name, is_active: true, updated_at: new Date().toISOString() },
+      { onConflict: 'ticker' }
+    )
+    return NextResponse.json({ skipped: true, reason: '関連する取り決めが見つかりませんでした' })
+  }
 
   const { data, error } = await adminSupabase
     .from('holding_rules')
