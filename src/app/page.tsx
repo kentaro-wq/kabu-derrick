@@ -61,7 +61,8 @@ function accountLabel(type: string) {
   if (type === 'nisa_growth') return 'NISA成長'
   if (type === 'nisa_tsumitate') return 'つみたてNISA'
   if (type === 'old_tsumitate') return '旧つみたてNISA'
-  if (type === 'tokutei') return '特定'
+  if (type === 'tokutei') return '特定口座'
+  if (type === 'mochikabu') return '持株会'
   if (type === 'dc') return 'DC'
   return type
 }
@@ -323,8 +324,14 @@ export default function Dashboard() {
                 </div>
                 <span style={{
                   fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 99,
-                  background: h.account_type === 'tokutei' ? '#2d1b4e' : h.account_type === 'dc' ? '#1a3a2a' : '#1e3a5f',
-                  color: h.account_type === 'tokutei' ? '#c084fc' : h.account_type === 'dc' ? '#4ade80' : '#60a5fa',
+                  background:
+                    h.account_type === 'tokutei' ? '#2d1b4e' :
+                    h.account_type === 'mochikabu' ? '#1c2e1c' :
+                    h.account_type === 'dc' ? '#1a3a2a' : '#1e3a5f',
+                  color:
+                    h.account_type === 'tokutei' ? '#c084fc' :
+                    h.account_type === 'mochikabu' ? '#86efac' :
+                    h.account_type === 'dc' ? '#4ade80' : '#60a5fa',
                 }}>
                   {accountLabel(h.account_type)}
                 </span>
@@ -354,7 +361,7 @@ export default function Dashboard() {
         {[
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
-          { href: '/rules', label: 'ルール', icon: '📌' },
+          { href: '/chat', label: 'AI相談', icon: '💬' },
           { href: '/strategy', label: '戦略', icon: '🧭' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (

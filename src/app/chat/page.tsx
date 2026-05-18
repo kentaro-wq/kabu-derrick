@@ -432,6 +432,7 @@ export default function ChatPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
+            <Link href="/rules" style={{ fontSize: 11, color: 'var(--muted)', textDecoration: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px' }}>📌 ルール</Link>
             <button onClick={() => { setShowHistory(true); loadHistory() }} style={{ fontSize: 11, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}>📋 履歴</button>
             {messages.length > 0 && (
               <button onClick={clearChat} style={{ fontSize: 11, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}>新規</button>
