@@ -106,7 +106,8 @@ export default function Dashboard() {
   const dcBalance = profile?.dc_balance ?? 0
   const totalAssets = totalInvested + bankBalance + dcBalance
   const targetAmount = profile?.target_amount ?? 30000000
-  const progressPct = Math.min(100, Math.round((totalAssets / targetAmount) * 100))
+  // 目標はDC別・現金別なので投資資産のみで進捗計算
+  const progressPct = Math.min(100, Math.round((totalInvested / targetAmount) * 100))
 
   const nisaUsed = profile?.nisa_growth_used ?? 0
   const nisaLimit = profile?.nisa_growth_limit ?? 2400000
@@ -207,28 +208,33 @@ export default function Dashboard() {
         <div style={{ fontSize: 13, color: totalGain >= 0 ? 'var(--green)' : 'var(--red)' }}>
           投資評価損益 {fmtGain(totalGain)}
         </div>
-        {/* 3000万目標プログレスバー */}
-        <div style={{ marginTop: 16 }}>
+        {/* 内訳 */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 14 }}>
+          {[
+            { label: '投資資産', sub: 'NISA・特定・持株会', value: totalInvested, highlight: true },
+            { label: '銀行預金', sub: '目標対象外', value: bankBalance, highlight: false },
+            { label: 'DC・iDeCo', sub: '目標対象外', value: dcBalance, highlight: false },
+          ].map(item => (
+            <div key={item.label} style={{
+              background: item.highlight ? 'rgba(99,102,241,0.12)' : 'var(--surface2)',
+              border: item.highlight ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
+              borderRadius: 8, padding: '8px 10px'
+            }}>
+              <div style={{ fontSize: 10, color: item.highlight ? 'var(--accent)' : 'var(--muted)', marginBottom: 1, fontWeight: item.highlight ? 600 : 400 }}>{item.label}</div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3 }}>{item.sub}</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{(item.value / 10000).toFixed(0)}万</div>
+            </div>
+          ))}
+        </div>
+        {/* 目標プログレスバー（投資資産のみ） */}
+        <div style={{ marginTop: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
-            <span>目標 {(targetAmount / 10000).toFixed(0)}万円</span>
-            <span>{progressPct}% 達成</span>
+            <span>目標 {(targetAmount / 10000).toFixed(0)}万円 <span style={{ fontSize: 10 }}>（投資資産のみ）</span></span>
+            <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{progressPct}% 達成</span>
           </div>
           <div style={{ height: 6, background: 'var(--surface2)', borderRadius: 99, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${progressPct}%`, background: 'var(--accent)', borderRadius: 99 }} />
           </div>
-        </div>
-        {/* 内訳 */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 14 }}>
-          {[
-            { label: '楽天証券', value: totalInvested },
-            { label: '銀行預金', value: bankBalance },
-            { label: 'DC', value: dcBalance },
-          ].map(item => (
-            <div key={item.label} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>{item.label}</div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{(item.value / 10000).toFixed(0)}万</div>
-            </div>
-          ))}
         </div>
       </div>
 
