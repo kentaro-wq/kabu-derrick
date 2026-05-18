@@ -454,6 +454,104 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
   return logs
 }
 
+// ─── ルール変更検知・自動保存 ─────────────────────────────────────
+
+async function detectAndSaveRules(
+  question: string,
+  aiAnswer: string,
+  history: Array<{ role: string; content: string }>
+): Promise<string[]> {
+  const ruleKeywords = [
+    '損切', '利確', '売却条件', '保有目的', '売却ライン', '損切りライン',
+    '目標株価', '保有方針', '配当目的', 'ホールド', 'まで保有',
+    'になったら売', '以上になったら', 'にする', 'と決めた', 'ルールは',
+    '方針は', '条件は', 'で売る', 'で利確', '超えたら売',
+  ]
+  const allText = question + ' ' + aiAnswer
+  if (!ruleKeywords.some(k => allText.includes(k))) return []
+
+  const recentText = [
+    ...history.slice(-6).map(m => `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.content.slice(0, 400)}`),
+    `ユーザー: ${question}`,
+    `AI: ${aiAnswer}`,
+  ].join('\n')
+
+  try {
+    const result = await claudeGenerate({
+      model: 'claude-haiku-4-5-20251001',
+      maxTokens: 600,
+      messages: [{
+        role: 'user',
+        parts: [{ text: `以下の会話で「特定の銘柄に対して明確に合意・確定した運用ルール」を抽出してください。
+曖昧な会話・一般論・まだ決まっていない内容は対象外です。
+「〜にする」「〜と決めた」「〜で売る」など、具体的に確定した内容のみ抽出してください。
+
+返却形式（JSONのみ。対象がなければ {"rules": []} を返す）:
+{
+  "rules": [
+    {
+      "ticker": "4桁の証券コード（わかる場合のみ。不明はnull）",
+      "name": "銘柄名（必須）",
+      "purpose": "保有目的（確定した場合のみ、不明はnull）",
+      "sell_conditions": "売却・損切り条件（確定した場合のみ、不明はnull）",
+      "dividend_notes": "配当に関する内容（不明はnull）",
+      "timeline_notes": "期限付き方針（不明はnull）",
+      "raw_agreement": "合意した要点を60字以内で（必須）"
+    }
+  ]
+}
+
+【会話】
+${recentText}` }],
+      }],
+    })
+    const cleaned = result.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+    const parsed = JSON.parse(cleaned) as {
+      rules: Array<{
+        ticker: string | null; name: string
+        purpose?: string | null; sell_conditions?: string | null
+        dividend_notes?: string | null; timeline_notes?: string | null
+        raw_agreement: string
+      }>
+    }
+
+    const logs: string[] = []
+    for (const rule of parsed.rules ?? []) {
+      if (!rule.name || !rule.raw_agreement) continue
+
+      // tickerが不明な場合は保有銘柄テーブルから名前で補完
+      let ticker = rule.ticker && /^\d{4}$/.test(rule.ticker) ? rule.ticker : null
+      if (!ticker) {
+        const { data: matched } = await adminSupabase
+          .from('holdings').select('ticker').ilike('name', `%${rule.name.slice(0, 6)}%`).limit(1).single()
+        if (matched?.ticker) ticker = matched.ticker
+      }
+      if (!ticker) continue // tickerなしは保存しない（onConflict keyが必要）
+
+      // 既存ルールを取得してnullで上書きしないようにマージ
+      const { data: existing } = await adminSupabase
+        .from('holding_rules').select('*').eq('ticker', ticker).single()
+
+      const { error } = await adminSupabase.from('holding_rules').upsert({
+        ticker,
+        name: rule.name,
+        purpose: rule.purpose ?? existing?.purpose ?? null,
+        sell_conditions: rule.sell_conditions ?? existing?.sell_conditions ?? null,
+        dividend_notes: rule.dividend_notes ?? existing?.dividend_notes ?? null,
+        timeline_notes: rule.timeline_notes ?? existing?.timeline_notes ?? null,
+        raw_agreement: rule.raw_agreement,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'ticker' })
+
+      if (!error) logs.push(`📋 ルール保存「${rule.name}」: ${rule.raw_agreement}`)
+    }
+    return logs
+  } catch {
+    return []
+  }
+}
+
 // ─── メインハンドラ ───────────────────────────────────────────────
 export async function POST(req: Request) {
   const body = await req.json()
@@ -514,7 +612,11 @@ export async function POST(req: Request) {
       system: MAIN_SYSTEM,
       messages: priorMessages,
     })
-    return NextResponse.json({ content, actionsLog })
+
+    // ルール変更を非同期で検知・保存（返答をブロックしない）
+    const rulesLog = await detectAndSaveRules(question, content, history ?? [])
+
+    return NextResponse.json({ content, actionsLog: [...actionsLog, ...rulesLog] })
   }
 
   if (mode === 'round1') {
