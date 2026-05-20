@@ -104,7 +104,7 @@ export default function Dashboard() {
   const totalGain = holdings.reduce((s, h) => s + (h.unrealized_gain ?? 0), 0)
   const bankBalance = profile?.bank_balance ?? 0
   const dcBalance = profile?.dc_balance ?? 0
-  const totalAssets = totalInvested + bankBalance + dcBalance
+  const totalAssets = totalInvested + dcBalance
   const targetAmount = profile?.target_amount ?? 30000000
   // 目標はDC別・現金別なので投資資産のみで進捗計算
   const progressPct = Math.min(100, Math.round((totalInvested / targetAmount) * 100))
@@ -212,8 +212,7 @@ export default function Dashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 14 }}>
           {[
             { label: '投資資産', sub: 'NISA・特定・持株会', value: totalInvested, highlight: true },
-            { label: '銀行預金', sub: '目標対象外', value: bankBalance, highlight: false },
-            { label: 'DC・iDeCo', sub: '目標対象外', value: dcBalance, highlight: false },
+            { label: 'DC・iDeCo', sub: '別管理', value: dcBalance, highlight: false },
           ].map(item => (
             <div key={item.label} style={{
               background: item.highlight ? 'rgba(99,102,241,0.12)' : 'var(--surface2)',
