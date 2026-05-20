@@ -28,10 +28,13 @@ export async function recalcNisaUsed(): Promise<void> {
   const growthUsed = Math.round(growthHoldingCost + growthOrderCost)
 
   // つみたて枠: 保有コストのみ
+  // 【注意】nisa_tsumitate / old_tsumitate は投資信託のみ。
+  // 投資信託の purchase_price は基準価額（円/10,000口）なので ÷10,000 が必要。
+  // 例: SLIM先進国 基準価額35,438 × 132,624口 ÷ 10,000 ≒ 470,000円（÷なしだと47億になる）
   const tsumitateUsed = Math.round(
     holdings
       .filter(h => (h.account_type === 'nisa_tsumitate' || h.account_type === 'old_tsumitate') && h.quantity != null && h.purchase_price != null)
-      .reduce((sum, h) => sum + Number(h.purchase_price) * Number(h.quantity), 0)
+      .reduce((sum, h) => sum + Number(h.purchase_price) * Number(h.quantity) / 10000, 0)
   )
 
   await adminSupabase.from('profile').update({
