@@ -30,6 +30,10 @@ export async function recalcNisaUsed(): Promise<void> {
 
   const growthUsed = Math.round(growthHoldingCost + growthOrderCost)
 
+  // 計算結果が0の場合はデータ欠損の可能性があるため更新しない
+  // （holdings の quantity/purchase_price が全て null だと誤って 0 になる）
+  if (growthUsed === 0) return
+
   // 成長枠のみ更新。つみたて枠は手動入力値を保持（上書きしない）
   await adminSupabase.from('profile').update({
     nisa_growth_used: growthUsed,
