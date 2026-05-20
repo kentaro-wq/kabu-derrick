@@ -577,18 +577,21 @@ ${recentText}` }],
       }
       if (!ticker) continue // tickerなしは保存しない（onConflict keyが必要）
 
-      // 既存ルールを取得してnullで上書きしないようにマージ
+      // 既存ルールを取得
       const { data: existing } = await adminSupabase
         .from('holding_rules').select('*').eq('ticker', ticker).single()
 
+      // 【重要】手動で設定済みのフィールドはAIで上書きしない
+      // AIが書けるのは「まだ空のフィールド」のみ
+      // ユーザーが手動で書いた内容を保護するため、既存値があればそちらを優先
       const { error } = await adminSupabase.from('holding_rules').upsert({
         ticker,
         name: rule.name,
-        purpose: rule.purpose ?? existing?.purpose ?? null,
-        sell_conditions: rule.sell_conditions ?? existing?.sell_conditions ?? null,
-        dividend_notes: rule.dividend_notes ?? existing?.dividend_notes ?? null,
-        timeline_notes: rule.timeline_notes ?? existing?.timeline_notes ?? null,
-        raw_agreement: rule.raw_agreement,
+        purpose: existing?.purpose || rule.purpose || null,
+        sell_conditions: existing?.sell_conditions || rule.sell_conditions || null,
+        dividend_notes: existing?.dividend_notes || rule.dividend_notes || null,
+        timeline_notes: existing?.timeline_notes || rule.timeline_notes || null,
+        raw_agreement: existing?.raw_agreement || rule.raw_agreement,
         is_active: true,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'ticker' })

@@ -103,12 +103,22 @@ ${chatText}
     return NextResponse.json({ skipped: true, reason: '関連する取り決めが見つかりませんでした' })
   }
 
+  // 既存ルールを取得して手動設定済みのフィールドを保護
+  const { data: existing } = await adminSupabase
+    .from('holding_rules').select('*').eq('ticker', ticker).single()
+
   const { data, error } = await adminSupabase
     .from('holding_rules')
     .upsert({
       ticker,
       name,
-      ...extracted,
+      // 手動設定済み（既存値あり）はAI抽出で上書きしない
+      purpose: existing?.purpose || extracted.purpose || null,
+      policy_basis: existing?.policy_basis || extracted.policy_basis || null,
+      sell_conditions: existing?.sell_conditions || extracted.sell_conditions || null,
+      dividend_notes: existing?.dividend_notes || extracted.dividend_notes || null,
+      timeline_notes: existing?.timeline_notes || extracted.timeline_notes || null,
+      raw_agreement: existing?.raw_agreement || extracted.raw_agreement || null,
       is_active: true,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'ticker' })
