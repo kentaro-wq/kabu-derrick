@@ -397,7 +397,7 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
       const baseHoldingQuery = adminSupabase
         .from('holdings')
         .select('*')
-        .eq('account_type', action.account_type ?? 'tokutei')
+        .eq('account_type', action.account_type ?? 'nisa_growth')
       const holdingFinal = action.ticker
         ? baseHoldingQuery.eq('ticker', action.ticker)
         : baseHoldingQuery.ilike('name', `%${action.name}%`)
