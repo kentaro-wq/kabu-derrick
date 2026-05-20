@@ -137,18 +137,28 @@ export default function SettingsPage() {
             />
           </div>
         ))}
-        {/* NISA利用済は保有銘柄から自動計算 → 表示のみ・編集不可 */}
+        {/* NISA成長枠・利用済は自動計算 → 表示のみ */}
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
             NISA成長枠・利用済（円）
-            <span style={{ marginLeft: 6, fontSize: 10, color: '#f59e0b' }}>※自動計算・編集不可</span>
+            <span style={{ marginLeft: 6, fontSize: 10, color: '#f59e0b' }}>※保有銘柄から自動計算</span>
           </div>
           <div style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', color: 'var(--muted)', fontSize: 14, opacity: 0.7 }}>
             {(profile.nisa_growth_used ?? 0).toLocaleString()}
           </div>
-          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3 }}>
-            保有銘柄の取得コスト合計から自動で更新されます
+        </div>
+        {/* つみたてNISA利用済は楽天画面から手動入力 */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+            つみたてNISA・利用済（円）
+            <span style={{ marginLeft: 6, fontSize: 10, color: '#34d399' }}>※楽天画面を見て手動更新</span>
           </div>
+          <input
+            type="number"
+            value={profile.nisa_tsumitate_used ?? 0}
+            onChange={e => setProfile(p => p ? { ...p, nisa_tsumitate_used: Number(e.target.value) } : p)}
+            style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', color: 'var(--text)', fontSize: 14, outline: 'none' }}
+          />
         </div>
         <button onClick={save} disabled={saving} style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: saved ? '#1a3a2a' : 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
           {saved ? '✓ 保存しました' : saving ? '保存中...' : '保存する'}

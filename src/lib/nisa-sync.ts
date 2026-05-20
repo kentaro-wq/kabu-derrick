@@ -1,10 +1,13 @@
 import { adminSupabase } from '@/lib/supabase'
 
 /**
- * holdings + 注文中(active buy orders) から NISA利用済額を再計算して profile を更新。
- * 楽天証券の表示ルールに合わせ:
- *   成長枠利用済 = 保有の取得コスト + 注文中の買い注文コスト（両方nisa_growth）
- *   つみたて枠利用済 = 保有の取得コスト（nisa_tsumitate + old_tsumitate）
+ * holdings + 注文中(active buy orders) から NISA成長枠の利用済額を再計算して profile を更新。
+ *
+ * 【つみたて枠は自動計算しない理由】
+ * - nisa_tsumitate / old_tsumitate の保有は複数年にまたがる積立総額
+ * - old_tsumitate（旧NISA）は当年の利用枠に無関係
+ * - 保有残高から「今年分だけ」を算出する手段がない
+ * → つみたて利用済は楽天証券の画面を見て設定画面から手動入力する運用とする
  */
 export async function recalcNisaUsed(): Promise<void> {
   const [holdingsRes, ordersRes] = await Promise.all([
@@ -15,7 +18,7 @@ export async function recalcNisaUsed(): Promise<void> {
   const holdings = holdingsRes.data ?? []
   const orders = ordersRes.data ?? []
 
-  // 成長枠: 保有コスト
+  // 成長枠: 保有コスト（個別株は取得単価×株数がそのままコスト）
   const growthHoldingCost = holdings
     .filter(h => h.account_type === 'nisa_growth' && h.quantity != null && h.purchase_price != null)
     .reduce((sum, h) => sum + Number(h.purchase_price) * Number(h.quantity), 0)
@@ -27,19 +30,9 @@ export async function recalcNisaUsed(): Promise<void> {
 
   const growthUsed = Math.round(growthHoldingCost + growthOrderCost)
 
-  // つみたて枠: 保有コストのみ
-  // 【注意】nisa_tsumitate / old_tsumitate は投資信託のみ。
-  // 投資信託の purchase_price は基準価額（円/10,000口）なので ÷10,000 が必要。
-  // 例: SLIM先進国 基準価額35,438 × 132,624口 ÷ 10,000 ≒ 470,000円（÷なしだと47億になる）
-  const tsumitateUsed = Math.round(
-    holdings
-      .filter(h => (h.account_type === 'nisa_tsumitate' || h.account_type === 'old_tsumitate') && h.quantity != null && h.purchase_price != null)
-      .reduce((sum, h) => sum + Number(h.purchase_price) * Number(h.quantity) / 10000, 0)
-  )
-
+  // 成長枠のみ更新。つみたて枠は手動入力値を保持（上書きしない）
   await adminSupabase.from('profile').update({
     nisa_growth_used: growthUsed,
-    nisa_tsumitate_used: tsumitateUsed,
     updated_at: new Date().toISOString(),
   }).neq('id', '00000000-0000-0000-0000-000000000000')
 }
