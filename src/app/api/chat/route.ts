@@ -268,7 +268,7 @@ type PortfolioAction =
   | { action: 'none' }
   | { action: 'order_placed'; name: string; ticker?: string | null; order_type: 'buy' | 'sell'; price: number | null; quantity: number | null; account_type: string; deadline?: string | null }
   | { action: 'buy_executed'; name: string; ticker?: string | null; quantity: number | null; price: number | null; account_type: string }
-  | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null }
+  | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null; price?: number | null }
 
 async function detectPortfolioAction(
   question: string,
@@ -321,7 +321,7 @@ async function detectPortfolioAction(
 【抽出形式】
 注文した: {"action":"order_placed","name":"銘柄名","ticker":"4桁コードまたはnull","order_type":"buy|sell","price":指値価格またはnull,"quantity":株数またはnull,"account_type":"nisa_growth|tokutei","deadline":"${defaultDeadline}"}
 買い約定: {"action":"buy_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull,"price":約定価格またはnull,"account_type":"nisa_growth|tokutei"}
-売り約定: {"action":"sell_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull}
+売り約定: {"action":"sell_executed","name":"銘柄名","ticker":"4桁コードまたはnull","quantity":株数またはnull,"price":売却価格またはnull}
 該当なし: {"action":"none"}
 
 今日: ${today}
@@ -441,14 +441,45 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
     const { error: orderErr } = await orderFinal
     if (!orderErr) logs.push(`✅ 売り注文「${action.name}」を約定済みに更新`)
 
+    // 削除前に保有データを取得（損益計算用）
+    const holdingQuery = adminSupabase.from('holdings').select('*')
+    const holdingResult = action.ticker
+      ? await holdingQuery.eq('ticker', action.ticker).maybeSingle()
+      : await holdingQuery.ilike('name', `%${action.name}%`).maybeSingle()
+    const holding = holdingResult.data
+
     // 保有を削除
-    const baseDeleteQuery = adminSupabase.from('holdings')
     if (action.ticker) {
-      await baseDeleteQuery.delete().eq('ticker', action.ticker)
+      await adminSupabase.from('holdings').delete().eq('ticker', action.ticker)
     } else {
-      await baseDeleteQuery.delete().ilike('name', `%${action.name}%`)
+      await adminSupabase.from('holdings').delete().ilike('name', `%${action.name}%`)
     }
-    logs.push(`✅ 保有「${action.name}」を売却済みとして削除`)
+
+    // 実現損益を記録
+    const sellPrice = action.price ?? holding?.current_price ?? null
+    const buyPrice = holding?.purchase_price ?? null
+    const quantity = action.quantity ?? holding?.quantity ?? null
+    if (sellPrice && quantity) {
+      const gain = buyPrice ? (sellPrice - buyPrice) * quantity : null
+      await adminSupabase.from('realized_trades').insert({
+        ticker: action.ticker ?? holding?.ticker ?? '',
+        name: action.name,
+        sell_date: new Date().toISOString().slice(0, 10),
+        sell_price: sellPrice,
+        buy_price: buyPrice,
+        quantity,
+        account_type: holding?.account_type ?? null,
+      })
+      const gainStr = gain != null
+        ? `（損益${gain >= 0 ? '+' : ''}${Math.round(gain / 10000)}万円）`
+        : ''
+      logs.push(`✅ 保有「${action.name}」を売却済みとして削除・収支に記録${gainStr}`)
+    } else {
+      logs.push(`✅ 保有「${action.name}」を売却済みとして削除`)
+    }
+
+    // NISA利用済を再計算
+    recalcNisaUsed().catch(console.error)
   }
 
   return logs

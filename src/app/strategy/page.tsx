@@ -29,6 +29,18 @@ interface TsumitateSetting {
   account_type: string
 }
 
+interface RealizedTrade {
+  id: string
+  ticker: string
+  name: string
+  sell_date: string
+  sell_price: number
+  buy_price: number | null
+  quantity: number
+  realized_gain: number | null
+  account_type: string | null
+}
+
 function toMan(yen: number) {
   const man = Math.round(yen / 10000)
   return man >= 10000 ? `${(man / 10000).toFixed(1)}億円` : `${man}万円`
@@ -70,6 +82,8 @@ export default function StrategyPage() {
   const [tsumitate, setTsumitate] = useState<TsumitateSetting[]>([])
   const [loading, setLoading] = useState(true)
 
+  const [trades, setTrades] = useState<RealizedTrade[]>([])
+
   const [comment, setComment] = useState<string | null>(null)
   const [focusPoint, setFocusPoint] = useState<string | null>(null)
   const [commentAt, setCommentAt] = useState<string | null>(null)
@@ -83,7 +97,8 @@ export default function StrategyPage() {
       fetch('/api/profile').then(r => r.json()),
       fetch('/api/tsumitate').then(r => r.json()),
       fetch('/api/strategy/history').then(r => r.json()),
-    ]).then(([h, r, o, p, t, hist]) => {
+      fetch(`/api/realized-trades?year=${new Date().getFullYear()}`).then(r => r.json()),
+    ]).then(([h, r, o, p, t, hist, tradeData]) => {
       setHoldings(Array.isArray(h) ? h : [])
       const rm = new Map<string, HoldingRule>()
       ;(Array.isArray(r) ? r : []).forEach((rule: HoldingRule) => rm.set(rule.ticker, rule))
@@ -91,6 +106,7 @@ export default function StrategyPage() {
       setOrders((Array.isArray(o) ? o : []).filter((ord: Order) => ord.status === 'active'))
       if (p && !p.error) setProfile(p as Profile)
       setTsumitate(t?.settings ?? [])
+      setTrades(Array.isArray(tradeData) ? tradeData : [])
       if (hist?.history?.length > 0) {
         const latest = hist.history[0]
         if (latest.raw_response) {
@@ -141,6 +157,66 @@ export default function StrategyPage() {
           <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>運用状況</div>
         </div>
       </div>
+
+      {/* 今年の収支 */}
+      {(() => {
+        const year = new Date().getFullYear()
+        const realizedTotal = trades.reduce((s, t) => s + (t.realized_gain ?? 0), 0)
+        const unrealizedTotal = holdings.reduce((s, h) => s + (h.unrealized_gain ?? 0), 0)
+        const totalPnl = realizedTotal + unrealizedTotal
+        return (
+          <div style={{ background: 'var(--surface)', border: `1px solid ${totalPnl >= 0 ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`, borderRadius: 14, padding: '14px 16px', marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', marginBottom: 12 }}>💹 {year}年の収支</div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: trades.length > 0 ? 12 : 0 }}>
+              <div style={{ flex: 1, background: 'var(--surface2)', borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>実現損益</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: realizedTotal >= 0 ? '#4ade80' : '#f87171' }}>
+                  {realizedTotal >= 0 ? '+' : ''}{toMan(realizedTotal)}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>{trades.length}件の売却</div>
+              </div>
+              <div style={{ flex: 1, background: 'var(--surface2)', borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>含み損益（現在）</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: unrealizedTotal >= 0 ? '#4ade80' : '#f87171' }}>
+                  {unrealizedTotal >= 0 ? '+' : ''}{toMan(unrealizedTotal)}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>保有中の合計</div>
+              </div>
+              <div style={{ flex: 1, background: totalPnl >= 0 ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', borderRadius: 10, padding: '10px 12px', border: `1px solid ${totalPnl >= 0 ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>合計</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
+                  {totalPnl >= 0 ? '+' : ''}{toMan(totalPnl)}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>実現＋含み</div>
+              </div>
+            </div>
+            {trades.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {trades.map(t => (
+                  <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+                    <div>
+                      <span style={{ color: 'var(--text)', fontWeight: 600 }}>{t.name}</span>
+                      <span style={{ color: 'var(--muted)', marginLeft: 6 }}>
+                        {t.sell_price.toLocaleString()}円×{t.quantity}株
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {t.realized_gain != null && (
+                        <span style={{ fontWeight: 700, color: t.realized_gain >= 0 ? '#4ade80' : '#f87171' }}>
+                          {t.realized_gain >= 0 ? '+' : ''}{Math.round(t.realized_gain).toLocaleString()}円
+                        </span>
+                      )}
+                      <span style={{ color: 'var(--muted)', fontSize: 10 }}>
+                        {new Date(t.sell_date).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* NISA今年の計画 */}
       {nisaStatus && profile && (
