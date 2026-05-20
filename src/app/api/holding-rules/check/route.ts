@@ -41,9 +41,14 @@ export async function POST() {
     portfolioAlerts.push(`⚠️ ポートフォリオ全体の含み損が${totalGainPct.toFixed(1)}%です。各銘柄のルールを見直してください。`)
   }
 
-  if (totalEval > 0) {
-    holdings.forEach(h => {
-      const share = (h.evaluation_amount ?? 0) / totalEval * 100
+  // 集中度チェック: 持株会(mochikabu)は除外
+  // 理由: 持株会は奨励金目的の制度積立・即売却不可（移管手続きが必要）
+  // 自由に売れない資産を「集中リスク」として警告するのは不適切
+  const freeHoldings = holdings.filter(h => h.account_type !== 'mochikabu')
+  const freeEval = freeHoldings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
+  if (freeEval > 0) {
+    freeHoldings.forEach(h => {
+      const share = (h.evaluation_amount ?? 0) / freeEval * 100
       if (share >= 40) {
         portfolioAlerts.push(`🔴 集中リスク: ${h.name}が全体の${share.toFixed(0)}%を占めています（推奨: 30%以下）`)
       } else if (share >= 30) {
@@ -99,6 +104,7 @@ ${ruleTexts}
 - 「◯◯年◯◯月までに」等の期限条件は今日の日付と比較
 - カスタムルールも同様に数値・条件を確認する
 - 条件が曖昧・未設定のものは「アクション不要」とする
+- 【重要】持株会（勤務先株の社員持株会）の銘柄は「即売却不可・移管手続きが必要な制度積立」のため、集中リスクや単純な売却提案は不要。移管・売却を検討すべき具体的な条件（株価急落・会社の財務悪化等）がある場合のみアクション要とする
 
 以下のJSON形式のみで返してください:
 {
