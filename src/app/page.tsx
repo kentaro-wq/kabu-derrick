@@ -12,13 +12,13 @@ function daysUntil(dateStr: string): number {
 
 function fmt(n: number | null | undefined) {
   if (n == null) return '—'
-  return n.toLocaleString('ja-JP') + '円'
+  return Math.round(n).toLocaleString('ja-JP') + '円'
 }
 
 function fmtGain(n: number | null | undefined) {
   if (n == null) return '—'
   const sign = n >= 0 ? '+' : ''
-  return sign + n.toLocaleString('ja-JP') + '円'
+  return sign + Math.round(n).toLocaleString('ja-JP') + '円'
 }
 
 function AssetChart({ snapshots }: { snapshots: { snapshot_date: string; total_assets: number }[] }) {
@@ -203,7 +203,7 @@ export default function Dashboard() {
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 20, marginBottom: 14 }}>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>総資産（概算）</div>
         <div style={{ fontSize: 32, fontWeight: 700, marginBottom: 4 }}>
-          {totalAssets.toLocaleString()}円
+          {Math.round(totalAssets).toLocaleString()}円
         </div>
         <div style={{ fontSize: 13, color: totalGain >= 0 ? 'var(--green)' : 'var(--red)' }}>
           投資評価損益 {fmtGain(totalGain)}
