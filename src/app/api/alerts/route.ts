@@ -31,34 +31,38 @@ export async function GET() {
   const alerts: Alert[] = []
 
   // ① 損益率アラート（個別株のみ）
+  const alertedTickers = new Set<string>() // ②の重複排除用
   for (const h of holdings) {
     if (!/^\d{4}$/.test(h.ticker)) continue
     const pct = h.unrealized_gain_pct != null
       ? Number(h.unrealized_gain_pct)
       : h.unrealized_gain != null && h.evaluation_amount != null
-        ? Math.round((Number(h.unrealized_gain) / (Number(h.evaluation_amount) - Number(h.unrealized_gain))) * 1000) / 10
+        ? (Number(h.unrealized_gain) / (Number(h.evaluation_amount) - Number(h.unrealized_gain))) * 100
         : null
 
     if (pct === null) continue
+    const pctStr = (pct >= 0 ? '+' : '') + pct.toFixed(1)
 
     if (pct >= 25) {
       alerts.push({
         id: `sell_${h.ticker}`,
         level: 'medium',
         type: 'sell_signal',
-        title: `${h.name} +${pct}% — 利確検討`,
+        title: `${h.name} ${pctStr}% — 利確検討`,
         body: `保有ルールの売却条件を確認してください。`,
         ticker: h.ticker,
       })
+      alertedTickers.add(h.ticker)
     } else if (pct <= -10) {
       alerts.push({
         id: `loss_${h.ticker}`,
         level: 'high',
         type: 'loss_warning',
-        title: `${h.name} ${pct}% — 損切り確認`,
+        title: `${h.name} ${pctStr}% — 損切り確認`,
         body: `設定した損切りラインを超えていないか確認してください。`,
         ticker: h.ticker,
       })
+      alertedTickers.add(h.ticker)
     }
   }
 
@@ -95,14 +99,17 @@ export async function GET() {
     }
   }
 
-  // ④ 銘柄ルールの売却条件リマインダー（条件が設定されている銘柄）
+  // ④ 銘柄ルールの売却条件リマインダー
+  // - ①で既にアラートが出た銘柄はスキップ（重複排除）
+  // - 含み益 +15% 以上かつ sell_conditions がある銘柄のみ表示（常時表示を防ぐ）
   for (const rule of rules) {
     if (!rule.sell_conditions || rule.sell_conditions === 'なし') continue
+    if (alertedTickers.has(rule.ticker)) continue // ①と重複しない
     const holding = holdings.find((h: { ticker: string }) => h.ticker === rule.ticker)
     if (!holding) continue
     const pct = holding.unrealized_gain_pct != null ? Number(holding.unrealized_gain_pct) : null
-    // 含み益がある銘柄でルールがある場合にリマインド
-    if (pct != null && pct > 5) {
+    // 15%以上の含み益があるときだけリマインド（5%だと常時出てしまう）
+    if (pct != null && pct >= 15) {
       alerts.push({
         id: `rule_${rule.ticker}`,
         level: 'low',
