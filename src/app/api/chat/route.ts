@@ -296,15 +296,20 @@ async function detectPortfolioAction(
   ]
   if (!actionKeywords.some(k => allText.includes(k))) return { action: 'none' }
 
-  // 重複防止: DBの既存注文・保有を取得
-  const [ordersRes, holdingsRes] = await Promise.all([
+  // 重複防止: DBの既存注文（active + 直近14日のexecuted）・保有・実現済みを取得
+  const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+  const [ordersActiveRes, ordersRecentRes, holdingsRes, realizedRes] = await Promise.all([
     adminSupabase.from('orders').select('name, ticker, price, quantity, order_type').eq('status', 'active'),
-    adminSupabase.from('holdings').select('name, ticker'),
+    adminSupabase.from('orders').select('name, ticker, price, quantity, order_type, status').eq('status', 'executed').gte('updated_at', cutoff),
+    adminSupabase.from('holdings').select('name, ticker, account_type'),
+    adminSupabase.from('realized_trades').select('name, ticker, sell_date').gte('sell_date', cutoff.slice(0, 10)),
   ])
-  const existingOrders = (ordersRes.data ?? [])
-    .map(o => `${o.name} ${o.order_type === 'buy' ? '買い' : '売り'} ${o.price}円 ${o.quantity}株`)
-    .join(' / ')
-  const existingHoldings = (holdingsRes.data ?? []).map(h => h.name).join(' / ')
+  const existingOrders = [
+    ...(ordersActiveRes.data ?? []).map(o => `${o.name} ${o.order_type === 'buy' ? '買い' : '売り'} ${o.price}円 ${o.quantity}株（注文中）`),
+    ...(ordersRecentRes.data ?? []).map(o => `${o.name} ${o.order_type === 'buy' ? '買い' : '売り'} ${o.price}円 ${o.quantity}株（14日以内に約定済み・再登録不可）`),
+  ].join(' / ')
+  const existingHoldings = (holdingsRes.data ?? []).map(h => `${h.name}(${h.account_type})`).join(' / ')
+  const recentSold = (realizedRes.data ?? []).map(r => `${r.name}（${r.sell_date}売却済み・再登録不可）`).join(' / ')
 
   const today = new Date().toISOString().slice(0, 10)
   const defaultDeadline = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
@@ -321,12 +326,15 @@ async function detectPortfolioAction(
 - 「〜した」「〜してきた」「〜できた」「〜しておいた」など完了形のみ対象
 - 「〜しようかな」「〜どう思う？」「〜検討中」は対象外（まだ実行していない）
 - 会話の流れから銘柄・価格・株数・口座を推測してよい
-- 既に登録済みの内容は重複登録しない
+- 既に登録済みの注文・約定済み・保有中の内容は重複登録しない（「14日以内に約定済み」の注文は絶対に再登録しない）
+- 既に保有中の銘柄をbuy_executedで再登録するのは「追加購入した」と明言された場合のみ
+- sell_executedは「保有銘柄」に存在する銘柄に対してのみ有効。保有にない銘柄のsell_executedは{"action":"none"}
 - 【重要】AIが直前のターンで「[銘柄]が約定」「[銘柄]を約定確認」と述べており、ユーザーが「反映して」「更新して」「データに入れて」「登録して」と言っている場合 → AIが確認した銘柄・価格・株数でbuy_executed/sell_executedを抽出する
 - 「約定したね」「約定したよ」など、どの銘柄か不明な場合は直前の会話（AIのターン含む）から銘柄を特定する
 
-【登録済み注文（重複不可）】${existingOrders || 'なし'}
-【保有銘柄（売り約定の照合用）】${existingHoldings || 'なし'}
+【登録済み注文・約定済み（重複不可）】${existingOrders || 'なし'}
+【現在の保有銘柄（口座付き）】${existingHoldings || 'なし'}
+【直近14日の売却済み（再登録不可）】${recentSold || 'なし'}
 
 【抽出形式】
 注文した: {"action":"order_placed","name":"銘柄名","ticker":"4桁コードまたはnull","order_type":"buy|sell","price":指値価格またはnull,"quantity":株数またはnull,"account_type":"nisa_growth|tokutei","deadline":"${defaultDeadline}"}
