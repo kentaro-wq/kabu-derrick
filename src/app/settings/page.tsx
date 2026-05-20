@@ -125,7 +125,6 @@ export default function SettingsPage() {
           { label: '目標資産（円）', key: 'target_amount' },
           { label: '教育費確保枠（円）', key: 'education_reserve' },
           { label: '手元現金確保（円）', key: 'cash_reserve' },
-          { label: 'NISA成長枠・利用済（円）', key: 'nisa_growth_used' },
           { label: 'NISA成長枠・上限（円）', key: 'nisa_growth_limit' },
         ].map(({ label, key }) => (
           <div key={key} style={{ marginBottom: 12 }}>
@@ -138,6 +137,19 @@ export default function SettingsPage() {
             />
           </div>
         ))}
+        {/* NISA利用済は保有銘柄から自動計算 → 表示のみ・編集不可 */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+            NISA成長枠・利用済（円）
+            <span style={{ marginLeft: 6, fontSize: 10, color: '#f59e0b' }}>※自動計算・編集不可</span>
+          </div>
+          <div style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', color: 'var(--muted)', fontSize: 14, opacity: 0.7 }}>
+            {(profile.nisa_growth_used ?? 0).toLocaleString()}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3 }}>
+            保有銘柄の取得コスト合計から自動で更新されます
+          </div>
+        </div>
         <button onClick={save} disabled={saving} style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: saved ? '#1a3a2a' : 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
           {saved ? '✓ 保存しました' : saving ? '保存中...' : '保存する'}
         </button>
