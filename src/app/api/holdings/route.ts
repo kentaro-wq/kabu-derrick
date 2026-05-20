@@ -18,10 +18,9 @@ export async function POST(req: Request) {
   return NextResponse.json(data)
 }
 
-// スクショ解析結果で全件置き換え → ルールチェックも非同期実行
+// スクショ解析結果で該当銘柄のみ更新（写真にない銘柄は削除しない）
 export async function PUT(req: Request) {
   const { holdings } = await req.json()
-  await adminSupabase.from('holdings').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   const rows = holdings
     .filter((h: Record<string, unknown>) => h.name && !String(h.name).includes('合計') && !String(h.name).includes('小計'))
     .map((h: Record<string, unknown>) => {
@@ -33,25 +32,56 @@ export async function PUT(req: Request) {
         updated_at: new Date().toISOString(),
       }
     })
-  const { data, error } = await adminSupabase.from('holdings').insert(rows).select()
-  if (error) {
-    console.error('[holdings PUT] insert error:', error.message, 'rows sample:', JSON.stringify(rows[0]))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+
+  if (rows.length === 0) return NextResponse.json([])
+
+  // 写真に写っている銘柄のtickerリスト
+  const tickers = rows.map((r: Record<string, unknown>) => r.ticker as string).filter(Boolean)
+
+  // 該当tickerの既存行を取得（account_type引継ぎ用）
+  const { data: existing } = await adminSupabase
+    .from('holdings')
+    .select('id, ticker, account_type')
+    .in('ticker', tickers)
+  const existingMap = new Map((existing ?? []).map((e: { ticker: string; id: string; account_type: string }) => [e.ticker, e]))
+
+  // upsert: 既存行はupdate、なければinsert
+  const results = []
+  for (const row of rows) {
+    const ticker = row.ticker as string
+    const found = existingMap.get(ticker)
+    if (found) {
+      // 既存行を更新（account_typeは既存を保持、写真から取れる場合は上書き）
+      const { data, error } = await adminSupabase
+        .from('holdings')
+        .update({
+          ...row,
+          account_type: row.account_type ?? found.account_type,
+        })
+        .eq('id', found.id)
+        .select()
+        .single()
+      if (!error && data) results.push(data)
+    } else {
+      // 新規insert
+      const { data, error } = await adminSupabase
+        .from('holdings')
+        .insert(row)
+        .select()
+        .single()
+      if (!error && data) results.push(data)
+      else if (error) console.error('[holdings PUT] insert error:', error.message)
+    }
   }
 
   // バックグラウンド: ルールチェック + 未設定銘柄のルール自動抽出
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
-  const savedHoldings = data as { ticker: string; name: string }[]
   ;(async () => {
-    // 既存ルール一覧を取得して、ルール未設定の銘柄だけ抽出を試みる
-    const { data: existingRules } = await adminSupabase
-      .from('holding_rules')
-      .select('ticker')
+    const { data: existingRules } = await adminSupabase.from('holding_rules').select('ticker')
     const ruleSet = new Set((existingRules ?? []).map((r: { ticker: string }) => r.ticker))
-
-    const noRuleHoldings = savedHoldings.filter(h => !ruleSet.has(h.ticker))
+    const noRuleHoldings = results.filter((h: { ticker: string }) => !ruleSet.has(h.ticker))
     await Promise.all(
-      noRuleHoldings.map(h =>
+      noRuleHoldings.map((h: { ticker: string; name: string }) =>
         fetch(`${baseUrl}/api/holding-rules/extract`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -59,12 +89,11 @@ export async function PUT(req: Request) {
         }).catch(() => {})
       )
     )
-    // 全銘柄のルールチェックも実行
     fetch(`${baseUrl}/api/holding-rules/check`, { method: 'POST' }).catch(() => {})
   })()
 
-  recalcNisaUsed().catch(console.error) // 保有更新 → NISA利用済を再計算
-  return NextResponse.json(data)
+  recalcNisaUsed().catch(console.error)
+  return NextResponse.json(results)
 }
 
 export async function PATCH(req: Request) {
