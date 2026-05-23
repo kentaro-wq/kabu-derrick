@@ -124,9 +124,16 @@ export async function updateAllHoldingPrices(): Promise<{ updated: number; skipp
   return { updated, skipped, error: null }
 }
 
-/** 指定銘柄の過去N日分のOHLCVを取得（テクニカル指標計算用） */
-export async function fetchOHLCVHistory(ticker: string, days = 80): Promise<import('./technicals').OHLCVBar[]> {
-  const idToken = await getIdToken()
+/**
+ * 指定銘柄の過去N日分のOHLCVを取得（テクニカル指標計算用）
+ * idToken を外部から渡すことで、バッチ処理時のトークン取得を1回に抑制できる
+ */
+export async function fetchOHLCVHistory(
+  ticker: string,
+  days = 80,
+  idTokenOverride?: string | null,
+): Promise<import('./technicals').OHLCVBar[]> {
+  const idToken = idTokenOverride ?? await getIdToken()
   if (!idToken) return []
 
   const code = toJQuantsCode(ticker)
