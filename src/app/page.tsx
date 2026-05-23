@@ -366,8 +366,8 @@ export default function Dashboard() {
         {[
           { href: '/', label: 'ホーム', icon: '📊' },
           { href: '/orders', label: '注文', icon: '📋' },
+          { href: '/scanner', label: 'スキャナー', icon: '📡' },
           { href: '/chat', label: 'AI相談', icon: '💬' },
-          { href: '/strategy', label: '戦略', icon: '🧭' },
           { href: '/settings', label: '設定', icon: '⚙️' },
         ].map(item => (
           <Link key={item.href} href={item.href} style={{

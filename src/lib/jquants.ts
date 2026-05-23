@@ -124,4 +124,47 @@ export async function updateAllHoldingPrices(): Promise<{ updated: number; skipp
   return { updated, skipped, error: null }
 }
 
+/** 指定銘柄の過去N日分のOHLCVを取得（テクニカル指標計算用） */
+export async function fetchOHLCVHistory(ticker: string, days = 80): Promise<import('./technicals').OHLCVBar[]> {
+  const idToken = await getIdToken()
+  if (!idToken) return []
+
+  const code = toJQuantsCode(ticker)
+  const to = new Date()
+  const from = new Date()
+  from.setDate(from.getDate() - Math.ceil(days * 1.6)) // 土日・祝日考慮で多めに取得
+
+  const fromStr = from.toISOString().slice(0, 10)
+  const toStr = to.toISOString().slice(0, 10)
+
+  try {
+    const res = await fetch(
+      `https://api.jquants.com/v1/prices/daily_quotes?code=${code}&from=${fromStr}&to=${toStr}`,
+      {
+        headers: { Authorization: `Bearer ${idToken}` },
+        signal: AbortSignal.timeout(10000),
+      }
+    )
+    if (!res.ok) return []
+    const data = await res.json()
+    const quotes: DailyQuote[] = data.daily_quotes ?? []
+    return quotes
+      .filter(q => q.Close != null && q.Volume != null)
+      .slice(-days)
+      .map(q => ({
+        date: q.Date,
+        open: q.Open,
+        high: q.High,
+        low: q.Low,
+        close: q.Close,
+        volume: q.Volume,
+      }))
+  } catch {
+    return []
+  }
+}
+
+/** IDトークンを外部から使えるようにエクスポート */
+export { getIdToken }
+
 export const isJQuantsConfigured = !!REFRESH_TOKEN

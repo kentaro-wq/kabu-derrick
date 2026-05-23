@@ -289,6 +289,95 @@ export async function fetchHotStocks(): Promise<HotStock[]> {
   }
 }
 
+export interface GainRankingItem {
+  ticker: string
+  name: string
+  price: number
+  changePct: number
+  volume: number | null
+}
+
+/**
+ * kabutan 上昇率ランキング（プライム市場）を取得
+ * URL: https://kabutan.jp/ranking/?mode=2&market=1
+ * 急騰候補の母集団として使用
+ */
+export async function fetchGainRankings(market = '1'): Promise<GainRankingItem[]> {
+  try {
+    const res = await fetch(`https://kabutan.jp/ranking/?mode=2&market=${market}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return []
+
+    const html = await res.text()
+    const $ = cheerio.load(html)
+    const items: GainRankingItem[] = []
+
+    // kabutan ランキングテーブルのパース
+    $('table.stock_table tbody tr, table.ranking_table tbody tr, #market_table tbody tr').each((_, row) => {
+      const cells = $(row).find('td')
+      if (cells.length < 4) return
+
+      try {
+        // tickerはaタグのhrefから抽出
+        const link = $(cells[1]).find('a').first()
+        const href = link.attr('href') || $(cells[0]).find('a').attr('href') || ''
+        const tickerMatch = href.match(/code=(\d{4})/) || href.match(/\/(\d{4})\//)
+        if (!tickerMatch) return
+
+        const ticker = tickerMatch[1]
+        const name = link.text().trim() || $(cells[1]).text().trim().split('\n')[0]
+        const priceText = $(cells[2]).text().replace(/[,\s]/g, '')
+        const changePctText = $(cells[4]).text().replace(/[%\s]/g, '')
+        const volumeText = $(cells[5]).text().replace(/[,\s]/g, '')
+
+        const price = parseFloat(priceText)
+        const changePct = parseFloat(changePctText)
+        const volume = parseFloat(volumeText) || null
+
+        if (ticker && name && !isNaN(price) && price > 0) {
+          items.push({ ticker, name, price, changePct: isNaN(changePct) ? 0 : changePct, volume })
+        }
+      } catch { /* skip */ }
+    })
+
+    // パースできない場合は汎用テーブルパースにフォールバック
+    if (items.length === 0) {
+      $('table tbody tr').each((_, row) => {
+        const cells = $(row).find('td')
+        if (cells.length < 4) return
+        try {
+          const allLinks = $(row).find('a')
+          let ticker = ''
+          let name = ''
+          allLinks.each((_, a) => {
+            const href = $(a).attr('href') || ''
+            const m = href.match(/code=(\d{4})/) || href.match(/[?/](\d{4})/)
+            if (m && !ticker) {
+              ticker = m[1]
+              name = $(a).text().trim()
+            }
+          })
+          if (!ticker) return
+          const nums = cells.map((_, td) => parseFloat($(td).text().replace(/[,%\s円]/g, ''))).get().filter(n => !isNaN(n))
+          if (nums.length >= 2) {
+            items.push({ ticker, name, price: nums[0], changePct: nums[nums.length - 2] || 0, volume: null })
+          }
+        } catch { /* skip */ }
+      })
+    }
+
+    return items
+      .filter(i => /^\d{4}$/.test(i.ticker))
+      .slice(0, 60)
+  } catch {
+    return []
+  }
+}
+
 // 市場全体の統計を取得
 export async function fetchMarketStats() {
   try {

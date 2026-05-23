@@ -11,6 +11,14 @@
     {
       "path": "/api/notify?type=evening",
       "schedule": "45 6 * * 1-5"
+    },
+    {
+      "path": "/api/signals/generate",
+      "schedule": "30 7 * * 1-5"
+    },
+    {
+      "path": "/api/signals/track",
+      "schedule": "50 7 * * 1-5"
     }
   ]
 }
