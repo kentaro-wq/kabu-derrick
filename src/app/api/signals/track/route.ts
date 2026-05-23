@@ -2,8 +2,11 @@
  * シグナル結果追跡（毎日の自動実行）
  *
  * 設計方針:
+ * - J-Quants からシグナル銘柄の OHLCV 履歴を取得し、
+ *   シグナル日から5/10/20営業日後の「実際の終値」を記録する
+ *   （kabutanの現在価格を使うとN日経過とずれて精度が壊れる）
  * - 「N日前のシグナル」ではなく「未追跡のシグナル全部」を対象に経過日数で判断
- * - これにより祝日でcronがスキップされても追跡漏れしない
+ *   これにより祝日でcronがスキップされても追跡漏れしない
  * - 的中判定:
  *    5日後 +3%以上 = hit_5d
  *   10日後 +5%以上 = hit_10d
@@ -12,20 +15,21 @@
  */
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
-import { fetchStockInfo } from '@/lib/kabutan'
+import { fetchOHLCVHistory, getIdToken } from '@/lib/jquants'
+import type { OHLCVBar } from '@/lib/technicals'
 
 export const maxDuration = 300
 
-/** JST基準で経過日数（暦日）を計算 */
-function daysElapsedJST(signalDate: string): number {
-  const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000)
-  const signalDay = new Date(signalDate + 'T00:00:00Z')
-  return Math.floor((jstNow.getTime() - signalDay.getTime()) / (1000 * 60 * 60 * 24))
+/** signal_date以降のN営業日後（インデックスN-1）の終値を返す。データ不足ならnull */
+function priceNDaysAfter(bars: OHLCVBar[], signalDate: string, n: number): number | null {
+  const afterSignal = bars.filter(b => b.date > signalDate)
+  if (afterSignal.length < n) return null
+  return afterSignal[n - 1].close
 }
 
 export async function POST() {
-  // 過去30日以内のシグナルを全部取得（既にoutcomeがあるかは後で判定）
-  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  // 過去40日以内のシグナルを対象（最大で20営業日後まで追跡するため余裕を持たせる）
+  const cutoff = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   const { data: signals, error: sigErr } = await adminSupabase
     .from('prediction_signals')
@@ -41,53 +45,78 @@ export async function POST() {
     return NextResponse.json({ ok: true, updatedCount: 0, details: [] })
   }
 
-  // 既存のoutcomeを一括取得（N+1クエリ回避）
+  // 既存outcomeを一括取得
   const signalIds = signals.map(s => s.id)
   const { data: existingOutcomes } = await adminSupabase
     .from('signal_outcomes')
     .select('id, signal_id, price_5d, pct_5d, hit_5d, price_10d, pct_10d, hit_10d, price_20d, pct_20d, hit_20d')
     .in('signal_id', signalIds)
 
-  const outcomeMap = new Map(
-    (existingOutcomes ?? []).map(o => [o.signal_id, o])
-  )
+  const outcomeMap = new Map((existingOutcomes ?? []).map(o => [o.signal_id, o]))
+
+  // まだ全部埋まっていないシグナルだけを処理対象に絞る
+  const pending = signals.filter(s => {
+    const ex = outcomeMap.get(s.id)
+    return !(ex?.pct_5d != null && ex?.pct_10d != null && ex?.pct_20d != null)
+  })
+
+  if (pending.length === 0) {
+    return NextResponse.json({ ok: true, updatedCount: 0, details: [] })
+  }
+
+  // J-Quants トークンを1回だけ取得
+  const idToken = await getIdToken()
+  if (!idToken) {
+    return NextResponse.json({ error: 'J-Quants認証失敗' }, { status: 503 })
+  }
+
+  // 銘柄ごとに OHLCV を1回ずつ取得（重複ticker回避）
+  const uniqueTickers = [...new Set(pending.map(s => s.ticker))]
+  const barsMap = new Map<string, OHLCVBar[]>()
+
+  // 5並列で取得（J-Quantsへの過剰アクセス回避）
+  const BATCH = 5
+  for (let i = 0; i < uniqueTickers.length; i += BATCH) {
+    const batch = uniqueTickers.slice(i, i + BATCH)
+    const results = await Promise.all(
+      batch.map(t => fetchOHLCVHistory(t, 60, idToken).then(b => [t, b] as const))
+    )
+    for (const [t, b] of results) barsMap.set(t, b)
+  }
 
   const updated: string[] = []
 
-  for (const signal of signals) {
+  for (const signal of pending) {
     const { id, ticker, price_at_signal, signal_date } = signal
     if (!price_at_signal) continue
 
-    const elapsed = daysElapsedJST(signal_date)
-
-    // 5日も経っていなければスキップ
-    if (elapsed < 5) continue
-
-    const existing = outcomeMap.get(id)
-
-    // 既存outcomeで20日分埋まっていればスキップ
-    if (existing?.pct_5d != null && existing?.pct_10d != null && existing?.pct_20d != null) {
+    const bars = barsMap.get(ticker)
+    if (!bars || bars.length === 0) {
+      console.error(`[signals/track] ${ticker} OHLCV取得失敗`)
       continue
     }
 
-    // 経過日数に対して既に埋まっているのは更新しない
-    const need5 = elapsed >= 5 && existing?.pct_5d == null
-    const need10 = elapsed >= 10 && existing?.pct_10d == null
-    const need20 = elapsed >= 20 && existing?.pct_20d == null
+    const existing = outcomeMap.get(id)
+    const pAtSignal = Number(price_at_signal)
+    if (!pAtSignal || pAtSignal <= 0) {
+      console.error(`[signals/track] ${ticker} 不正な price_at_signal: ${price_at_signal}`)
+      continue
+    }
+
+    // J-Quants から N営業日後の終値を取得
+    const p5  = priceNDaysAfter(bars, signal_date, 5)
+    const p10 = priceNDaysAfter(bars, signal_date, 10)
+    const p20 = priceNDaysAfter(bars, signal_date, 20)
+
+    // 既存で埋まっていない & データが取得できた分だけ更新
+    const need5  = existing?.pct_5d  == null && p5  != null
+    const need10 = existing?.pct_10d == null && p10 != null
+    const need20 = existing?.pct_20d == null && p20 != null
 
     if (!need5 && !need10 && !need20) continue
 
-    // 現在価格を取得
-    const info = await fetchStockInfo(ticker)
-    if (!info?.price) {
-      console.error(`[signals/track] ${ticker} 株価取得失敗`)
-      continue
-    }
+    const calcPct = (p: number) => Math.round(((p - pAtSignal) / pAtSignal) * 1000) / 10
 
-    const currentPrice = info.price
-    const pct = Math.round(((currentPrice - Number(price_at_signal)) / Number(price_at_signal)) * 1000) / 10
-
-    // UPSERT で重複防止
     const upsertRow: Record<string, unknown> = {
       signal_id: id,
       ticker,
@@ -95,13 +124,12 @@ export async function POST() {
       updated_at: new Date().toISOString(),
     }
 
-    // 既存値があれば維持、新規/未埋めの場合のみ更新
-    if (need5)  { upsertRow.price_5d = currentPrice;  upsertRow.pct_5d = pct;  upsertRow.hit_5d = pct >= 3.0 }
-    if (need10) { upsertRow.price_10d = currentPrice; upsertRow.pct_10d = pct; upsertRow.hit_10d = pct >= 5.0 }
-    if (need20) { upsertRow.price_20d = currentPrice; upsertRow.pct_20d = pct; upsertRow.hit_20d = pct >= 5.0 }
+    // 新規N日後を書き込み
+    if (need5)  { upsertRow.price_5d  = p5;  upsertRow.pct_5d  = calcPct(p5!);  upsertRow.hit_5d  = calcPct(p5!)  >= 3.0 }
+    if (need10) { upsertRow.price_10d = p10; upsertRow.pct_10d = calcPct(p10!); upsertRow.hit_10d = calcPct(p10!) >= 5.0 }
+    if (need20) { upsertRow.price_20d = p20; upsertRow.pct_20d = calcPct(p20!); upsertRow.hit_20d = calcPct(p20!) >= 5.0 }
 
-    // 既存値を維持するため、existing から既に埋まっている値を全カラム分コピー
-    // （UPSERTは未指定カラムを NULL で上書きするため）
+    // 既存値を維持（UPSERTは未指定カラムをNULL上書きするため）
     if (existing?.pct_5d != null && !need5) {
       upsertRow.price_5d = existing.price_5d
       upsertRow.pct_5d = existing.pct_5d
@@ -128,17 +156,16 @@ export async function POST() {
     }
 
     const segments: string[] = []
-    if (need5) segments.push(`5d:${pct >= 0 ? '+' : ''}${pct}%`)
-    if (need10) segments.push(`10d:${pct >= 0 ? '+' : ''}${pct}%`)
-    if (need20) segments.push(`20d:${pct >= 0 ? '+' : ''}${pct}%`)
+    if (need5)  segments.push(`5d:${calcPct(p5!)  >= 0 ? '+' : ''}${calcPct(p5!)}%`)
+    if (need10) segments.push(`10d:${calcPct(p10!) >= 0 ? '+' : ''}${calcPct(p10!)}%`)
+    if (need20) segments.push(`20d:${calcPct(p20!) >= 0 ? '+' : ''}${calcPct(p20!)}%`)
     updated.push(`${ticker} (${segments.join(', ')})`)
-
-    await new Promise(r => setTimeout(r, 300))
   }
 
   return NextResponse.json({
     ok: true,
     updatedCount: updated.length,
+    totalPending: pending.length,
     details: updated,
     timestamp: new Date().toISOString(),
   })

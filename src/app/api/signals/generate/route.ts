@@ -93,43 +93,49 @@ ${fundamentalSummary}
   }
 }
 
-/** 1銘柄を分析（J-Quants → kabutan → Claude）並列実行用 */
-async function analyzeOne(
-  candidate: { ticker: string; name: string; price: number },
-  idToken: string,
-): Promise<{
-  candidate: typeof candidate
-  bars: ReturnType<typeof calcIndicators> | null
+interface AnalysisResult {
+  candidate: { ticker: string; name: string; price: number }
   indicators: ReturnType<typeof calcIndicators> | null
   info: Awaited<ReturnType<typeof fetchStockInfo>>
   judgment: SignalResult | null
-}> {
-  const { ticker, name, price } = candidate
+}
 
-  // J-Quants と kabutan を並列取得
-  const [bars, info] = await Promise.all([
-    fetchOHLCVHistory(ticker, 80, idToken),
-    fetchStockInfo(ticker),
-  ])
+/** 1銘柄を分析（J-Quants → kabutan → Claude）並列実行用。例外は全て握り潰す */
+async function analyzeOne(
+  candidate: { ticker: string; name: string; price: number },
+  idToken: string,
+): Promise<AnalysisResult> {
+  try {
+    const { ticker, name, price } = candidate
 
-  if (bars.length < 25) {
-    return { candidate, bars: null, indicators: null, info, judgment: null }
+    // J-Quants と kabutan を並列取得（どちらも内部でエラーハンドリング済み）
+    const [bars, info] = await Promise.all([
+      fetchOHLCVHistory(ticker, 80, idToken),
+      fetchStockInfo(ticker),
+    ])
+
+    if (bars.length < 25) {
+      return { candidate, indicators: null, info, judgment: null }
+    }
+
+    const indicators = calcIndicators(bars)
+    const indicatorSummary = summarizeIndicators(ticker, price, indicators)
+    const fundamentalSummary = info
+      ? [
+          `PER: ${info.per ?? '—'}倍`,
+          `PBR: ${info.pbr ?? '—'}倍`,
+          `配当利回り: ${info.dividendYield ?? '—'}%`,
+          `売上高前期比: ${info.revenueGrowthPct != null ? info.revenueGrowthPct + '%' : '—'}`,
+          `経常益前期比: ${info.profitGrowthPct != null ? info.profitGrowthPct + '%' : '—'}`,
+        ].join(', ')
+      : 'ファンダメンタルデータ取得失敗'
+
+    const judgment = await judgeSignal(ticker, name, price, indicatorSummary, fundamentalSummary)
+    return { candidate, indicators, info, judgment }
+  } catch (e) {
+    console.error(`[signals/generate] analyzeOne error for ${candidate.ticker}:`, e)
+    return { candidate, indicators: null, info: null, judgment: null }
   }
-
-  const indicators = calcIndicators(bars)
-  const indicatorSummary = summarizeIndicators(ticker, price, indicators)
-  const fundamentalSummary = info
-    ? [
-        `PER: ${info.per ?? '—'}倍`,
-        `PBR: ${info.pbr ?? '—'}倍`,
-        `配当利回り: ${info.dividendYield ?? '—'}%`,
-        `売上高前期比: ${info.revenueGrowthPct != null ? info.revenueGrowthPct + '%' : '—'}`,
-        `経常益前期比: ${info.profitGrowthPct != null ? info.profitGrowthPct + '%' : '—'}`,
-      ].join(', ')
-    : 'ファンダメンタルデータ取得失敗'
-
-  const judgment = await judgeSignal(ticker, name, price, indicatorSummary, fundamentalSummary)
-  return { candidate, bars: null, indicators, info, judgment }
 }
 
 export async function POST() {
@@ -185,8 +191,9 @@ export async function POST() {
   }
 
   // Step 3〜5: 並列バッチ処理（5銘柄ずつ並列）でタイムアウト回避
+  // allSettled でなく Promise.all で OK（analyzeOne 内で全例外を握り潰しているため）
   const BATCH_SIZE = 5
-  const allResults: Awaited<ReturnType<typeof analyzeOne>>[] = []
+  const allResults: AnalysisResult[] = []
 
   for (let i = 0; i < filtered.length; i += BATCH_SIZE) {
     const batch = filtered.slice(i, i + BATCH_SIZE)
