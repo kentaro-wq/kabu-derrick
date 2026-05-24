@@ -145,6 +145,25 @@ interface MetricsResponse {
   }
 }
 
+interface BigWinnersResponse {
+  threshold: number
+  horizon: string
+  totalWinners: number
+  caught: number
+  missed: number
+  captureRate: number | null
+  factors: Record<string, { caughtRate: number | null; missedRate: number | null; baseline: number | null }>
+  numericFactors: Record<string, { caught: number | null; missed: number | null }>
+  winners: Array<{
+    ticker: string; name: string | null; date: string
+    claudeFire: boolean | null; claudeScore: number | null
+    pct5d: number | null; pct10d: number | null; pct20d: number | null
+    volumeRatio: number | null; rsi14: number | null
+    goldenCross: boolean | null; aboveMa25: boolean | null; aboveMa75: boolean | null
+    reasoning: string | null; conditionsMet: string[] | null
+  }>
+}
+
 export default function BacktestPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [periodStats, setPeriodStats] = useState<PeriodStat[]>([])
@@ -167,6 +186,9 @@ export default function BacktestPage() {
   const [showInsights, setShowInsights] = useState(false)
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [metricsHorizon, setMetricsHorizon] = useState<'5d' | '10d' | '20d'>('10d')
+  const [bigWinners, setBigWinners] = useState<BigWinnersResponse | null>(null)
+  const [bigThreshold, setBigThreshold] = useState<10 | 15 | 20>(15)
+  const [showBigWinners, setShowBigWinners] = useState(true)
 
   // 設定パラメータ
   const [sampleSize, setSampleSize] = useState(10)
@@ -175,12 +197,13 @@ export default function BacktestPage() {
   async function loadRuns() {
     setLoading(true)
     try {
-      const [runsRes, autoRes, sprintRes, insightsRes, metricsRes] = await Promise.all([
+      const [runsRes, autoRes, sprintRes, insightsRes, metricsRes, bigWinnersRes] = await Promise.all([
         fetch('/api/backtest/runs').then(r => r.json()),
         fetch('/api/backtest/auto').then(r => r.json()),
         fetch('/api/backtest/sprint/status').then(r => r.json()),
         fetch('/api/backtest/insights').then(r => r.json()),
         fetch('/api/backtest/metrics').then(r => r.json()),
+        fetch(`/api/backtest/big-winners?threshold=${bigThreshold}&horizon=20d`).then(r => r.json()),
       ])
       setRuns(runsRes.runs ?? [])
       setPeriodStats(runsRes.periodStats ?? [])
@@ -189,12 +212,13 @@ export default function BacktestPage() {
       setProjection(sprintRes.projection ?? null)
       setInsights(insightsRes)
       setMetrics(metricsRes)
+      setBigWinners(bigWinnersRes)
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { loadRuns() }, [])
+  useEffect(() => { loadRuns() }, [bigThreshold])
 
   // アクティブスプリントがあれば: 状態更新 + tick 自動発火
   useEffect(() => {
@@ -505,6 +529,131 @@ export default function BacktestPage() {
           </div>
         )}
       </div>
+
+      {/* 🚀 爆上がり分析 — AI による爆上がり検出能力の検証 */}
+      {bigWinners && bigWinners.totalWinners > 0 && (
+        <div style={{ background: '#1a1d27', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div
+            onClick={() => setShowBigWinners(!showBigWinners)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              🚀 爆上がり検出能力（+{bigWinners.threshold}%以上, 20日後）
+            </div>
+            <span style={{ fontSize: 14, color: '#6b7280' }}>{showBigWinners ? '▼' : '▶'}</span>
+          </div>
+
+          {showBigWinners && (
+            <>
+              {/* 閾値切替 */}
+              <div style={{ display: 'flex', gap: 4, marginTop: 8, marginBottom: 10 }}>
+                {([10, 15, 20] as const).map(t => (
+                  <button key={t} onClick={() => setBigThreshold(t)} style={{
+                    padding: '3px 8px', fontSize: 10, borderRadius: 4, border: 'none', cursor: 'pointer',
+                    background: bigThreshold === t ? '#f59e0b' : '#0f1117',
+                    color: bigThreshold === t ? 'white' : '#9ca3af',
+                  }}>+{t}%以上</button>
+                ))}
+              </div>
+
+              {/* キャプチャ率 */}
+              <div style={{ background: '#1a1408', borderRadius: 6, padding: 10, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: '#fbbf24', marginBottom: 6 }}>
+                  📊 全{bigWinners.totalWinners}件の爆上がり中、Claudeが捕捉した数
+                </div>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
+                  <div>
+                    <span style={{ fontSize: 24, fontWeight: 700, color: '#34d399' }}>{bigWinners.caught}</span>
+                    <span style={{ fontSize: 12, color: '#9ca3af' }}> 捕捉 / </span>
+                    <span style={{ fontSize: 18, fontWeight: 700, color: '#f87171' }}>{bigWinners.missed}</span>
+                    <span style={{ fontSize: 12, color: '#9ca3af' }}> 見逃し</span>
+                  </div>
+                  <div style={{ marginLeft: 'auto', fontSize: 18, fontWeight: 700, color: '#fbbf24' }}>
+                    {bigWinners.captureRate ?? 0}%
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
+                  これがAIの真価。低くても凡庸な上昇を排除して質を上げるのが目標。
+                </div>
+              </div>
+
+              {/* 共通因子比較 */}
+              <div style={{ background: '#0f1117', borderRadius: 6, padding: 10, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
+                  📌 爆上がり群の共通因子（Claudeが見るべきパターン）
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10 }}>
+                  {Object.entries(bigWinners.factors).map(([key, f]) => {
+                    const cr = f.caughtRate ?? 0
+                    const mr = f.missedRate ?? 0
+                    const bl = f.baseline ?? 0
+                    return (
+                      <div key={key} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 1fr 1fr', gap: 6, padding: 4 }}>
+                        <span style={{ color: '#d1d5db' }}>{key.replace('_', ' ')}</span>
+                        <span style={{ color: '#34d399' }}>捕捉群: {cr}%</span>
+                        <span style={{ color: '#f87171' }}>見逃群: {mr}%</span>
+                        <span style={{ color: '#6b7280' }}>全体: {bl}%</span>
+                      </div>
+                    )
+                  })}
+                  {bigWinners.numericFactors.volume_ratio && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 1fr 1fr', gap: 6, padding: 4 }}>
+                      <span style={{ color: '#d1d5db' }}>出来高比平均</span>
+                      <span style={{ color: '#34d399' }}>捕捉群: {bigWinners.numericFactors.volume_ratio.caught ?? '—'}x</span>
+                      <span style={{ color: '#f87171' }}>見逃群: {bigWinners.numericFactors.volume_ratio.missed ?? '—'}x</span>
+                      <span style={{ color: '#6b7280' }}>—</span>
+                    </div>
+                  )}
+                  {bigWinners.numericFactors.rsi14 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 1fr 1fr', gap: 6, padding: 4 }}>
+                      <span style={{ color: '#d1d5db' }}>RSI平均</span>
+                      <span style={{ color: '#34d399' }}>捕捉群: {bigWinners.numericFactors.rsi14.caught ?? '—'}</span>
+                      <span style={{ color: '#f87171' }}>見逃群: {bigWinners.numericFactors.rsi14.missed ?? '—'}</span>
+                      <span style={{ color: '#6b7280' }}>—</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
+                  💡 「見逃群」の値こそプロンプト改善の鍵。これらの特徴を持つ銘柄を発火するように調整する。
+                </div>
+              </div>
+
+              {/* 上位爆上がり銘柄一覧 */}
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>🔥 上位の爆上がり銘柄（最大30件）</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 300, overflowY: 'auto' }}>
+                {bigWinners.winners.map((w, i) => (
+                  <div key={i} style={{
+                    background: w.claudeFire ? '#0f2d1f' : '#2d1f0f',
+                    borderLeft: '3px solid ' + (w.claudeFire ? '#34d399' : '#f87171'),
+                    padding: '6px 8px', borderRadius: 4,
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ fontWeight: 600 }}>{w.name ?? w.ticker}</span>
+                      <span style={{ color: '#6b7280', marginLeft: 6 }}>{w.ticker} · {w.date}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {w.claudeFire ? (
+                        <span style={{ color: '#34d399' }}>✓捕捉</span>
+                      ) : (
+                        <span style={{ color: '#f87171' }}>✗見逃し</span>
+                      )}
+                      <span style={{ color: '#fbbf24', fontWeight: 700 }}>
+                        {w.pct20d != null ? `+${w.pct20d}%` : '—'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {bigWinners.totalWinners > 30 && (
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 4, textAlign: 'center' }}>
+                  …他 {bigWinners.totalWinners - 30} 件
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* 多角的評価 — 混同行列ベース */}
       {metrics?.horizons && metrics.total > 0 && (() => {
