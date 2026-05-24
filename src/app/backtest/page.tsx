@@ -196,18 +196,30 @@ export default function BacktestPage() {
 
   useEffect(() => { loadRuns() }, [])
 
-  // アクティブスプリントがあればリアルタイム更新
+  // アクティブスプリントがあれば: 状態更新 + tick 自動発火
   useEffect(() => {
     if (activeSprint?.status !== 'active') return
+    let ticking = false  // 多重実行防止
     const interval = setInterval(async () => {
+      // 状態取得
       const res = await fetch(`/api/backtest/sprint/status?id=${activeSprint.id}`)
       const d = await res.json()
       setActiveSprint(d.sprint ?? null)
       setProjection(d.projection ?? null)
       if (d.sprint?.status !== 'active') {
-        loadRuns()  // 完了したら全体リロード
+        loadRuns()
+        return
       }
-    }, 10000)  // 10秒ごと
+      // active なら tick を発火（Hobby plan で chain が切れる対策）
+      if (!ticking) {
+        ticking = true
+        fetch('/api/backtest/sprint/tick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprintId: activeSprint.id }),
+        }).finally(() => { ticking = false })
+      }
+    }, 15000)  // 15秒ごと
     return () => clearInterval(interval)
   }, [activeSprint?.id, activeSprint?.status])
 
