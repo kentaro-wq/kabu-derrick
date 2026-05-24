@@ -107,5 +107,33 @@ export async function GET(req: Request) {
     result.oldDateRange = { error: String(e) }
   }
 
+  // 6. V2 エンドポイント /v2/equities/bars/daily を試す
+  try {
+    const res6 = await fetch(
+      `https://api.jquants.com/v2/equities/bars/daily?code=${code}`,
+      { headers: { 'x-api-key': apiKey }, signal: AbortSignal.timeout(10000) }
+    )
+    result.v2Endpoint = {
+      status: res6.status,
+      bodyHead: (await res6.text()).slice(0, 500),
+    }
+  } catch (e) {
+    result.v2Endpoint = { error: String(e) }
+  }
+
+  // 7. V2 で別のコード形式を試す（4桁のみ）
+  try {
+    const res7 = await fetch(
+      `https://api.jquants.com/v2/equities/bars/daily?code=7203`,
+      { headers: { 'x-api-key': apiKey }, signal: AbortSignal.timeout(10000) }
+    )
+    result.v2Code4digit = {
+      status: res7.status,
+      bodyHead: (await res7.text()).slice(0, 500),
+    }
+  } catch (e) {
+    result.v2Code4digit = { error: String(e) }
+  }
+
   return NextResponse.json(result)
 }
