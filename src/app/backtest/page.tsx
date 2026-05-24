@@ -79,6 +79,36 @@ function OutcomeChip({ pct, hit }: { pct: number | null; hit: boolean | null }) 
   )
 }
 
+interface Sprint {
+  id: string
+  name: string
+  budget_yen: number
+  status: 'active' | 'completed' | 'cancelled'
+  total_runs: number
+  total_candidates: number
+  total_fires: number
+  total_cost_yen: number
+  hit_5d: number; tracked_5d: number
+  hit_10d: number; tracked_10d: number
+  hit_20d: number; tracked_20d: number
+  hit_rate_10d: number | null
+  avg_return_10d: number | null
+  started_at: string
+  completed_at: string | null
+}
+
+interface Projection {
+  currentHitRate10d: number
+  currentMargin: number
+  currentTracked: number
+  additionalBudgetYen: number
+  projectedTracked: number
+  projectedMargin: number
+  marginImprovement: number
+  fireRate: number
+  note: string
+}
+
 export default function BacktestPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [periodStats, setPeriodStats] = useState<PeriodStat[]>([])
@@ -92,6 +122,11 @@ export default function BacktestPage() {
   const [signalFilter, setSignalFilter] = useState<'fired' | 'all'>('fired')
   const [expanded, setExpanded] = useState<string | null>(null)
 
+  // スプリント関連
+  const [activeSprint, setActiveSprint] = useState<Sprint | null>(null)
+  const [projection, setProjection] = useState<Projection | null>(null)
+  const [sprintBudget, setSprintBudget] = useState(600)
+
   // 設定パラメータ
   const [sampleSize, setSampleSize] = useState(10)
   const [maxCandidatesPerDay, setMaxCandidatesPerDay] = useState(8)
@@ -99,19 +134,67 @@ export default function BacktestPage() {
   async function loadRuns() {
     setLoading(true)
     try {
-      const [runsRes, autoRes] = await Promise.all([
+      const [runsRes, autoRes, sprintRes] = await Promise.all([
         fetch('/api/backtest/runs').then(r => r.json()),
         fetch('/api/backtest/auto').then(r => r.json()),
+        fetch('/api/backtest/sprint/status').then(r => r.json()),
       ])
       setRuns(runsRes.runs ?? [])
       setPeriodStats(runsRes.periodStats ?? [])
       setAutoEnabled(autoRes.enabled ?? null)
+      setActiveSprint(sprintRes.sprint ?? null)
+      setProjection(sprintRes.projection ?? null)
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => { loadRuns() }, [])
+
+  // アクティブスプリントがあればリアルタイム更新
+  useEffect(() => {
+    if (activeSprint?.status !== 'active') return
+    const interval = setInterval(async () => {
+      const res = await fetch(`/api/backtest/sprint/status?id=${activeSprint.id}`)
+      const d = await res.json()
+      setActiveSprint(d.sprint ?? null)
+      setProjection(d.projection ?? null)
+      if (d.sprint?.status !== 'active') {
+        loadRuns()  // 完了したら全体リロード
+      }
+    }, 10000)  // 10秒ごと
+    return () => clearInterval(interval)
+  }, [activeSprint?.id, activeSprint?.status])
+
+  async function startSprint() {
+    if (!confirm(`予算 ¥${sprintBudget} でスプリントを開始しますか？\n約${Math.floor(sprintBudget / 0.4)}評価を自動実行します。`)) return
+    try {
+      const res = await fetch('/api/backtest/sprint/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budgetYen: sprintBudget }),
+      })
+      const d = await res.json()
+      if (d.ok) {
+        setActiveSprint(d.sprint)
+      } else {
+        alert(d.error ?? 'スプリント開始失敗')
+      }
+    } catch (e) {
+      alert(`エラー: ${String(e)}`)
+    }
+  }
+
+  async function cancelSprint() {
+    if (!activeSprint) return
+    if (!confirm('スプリントを停止しますか？（途中までのデータは残ります）')) return
+    await fetch('/api/backtest/sprint/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activeSprint.id }),
+    })
+    loadRuns()
+  }
 
   async function handleToggleAuto() {
     if (autoEnabled === null) return
@@ -210,6 +293,126 @@ export default function BacktestPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* スプリント実行カード */}
+      <div style={{
+        background: activeSprint?.status === 'active' ? '#1a2333' : '#1a1d27',
+        border: activeSprint?.status === 'active' ? '1px solid #3b82f6' : '1px solid #2d3148',
+        borderRadius: 12, padding: 14, marginBottom: 12,
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: '#60a5fa' }}>
+          🚀 集中スプリント — 予算ベースで連続実行
+        </div>
+
+        {/* active sprint がある場合の進捗UI */}
+        {activeSprint?.status === 'active' ? (
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{activeSprint.name}</div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
+              実行中... 進捗 ¥{Math.round(activeSprint.total_cost_yen)} / ¥{activeSprint.budget_yen}
+            </div>
+            {/* プログレスバー */}
+            <div style={{ height: 8, background: '#0f1117', borderRadius: 4, overflow: 'hidden', marginBottom: 10 }}>
+              <div style={{
+                height: '100%',
+                width: `${Math.min(100, (activeSprint.total_cost_yen / activeSprint.budget_yen) * 100)}%`,
+                background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
+                transition: 'width 0.5s',
+              }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6, marginBottom: 10, padding: 8, background: '#0f1117', borderRadius: 6 }}>
+              <div>
+                <div style={{ fontSize: 9, color: '#6b7280' }}>実行回数</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{activeSprint.total_runs}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: '#6b7280' }}>評価数</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{activeSprint.total_candidates}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: '#6b7280' }}>発火数</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#f97316' }}>{activeSprint.total_fires}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: '#6b7280' }}>追跡済</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{activeSprint.tracked_10d}</div>
+              </div>
+            </div>
+            {activeSprint.tracked_10d > 0 && (
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
+                途中打率（10日後）:{' '}
+                <HitRateBadge
+                  rate={activeSprint.tracked_10d > 0 ? Math.round((activeSprint.hit_10d / activeSprint.tracked_10d) * 1000) / 10 : null}
+                  n={activeSprint.tracked_10d}
+                />
+              </div>
+            )}
+            <button
+              onClick={cancelSprint}
+              style={{
+                width: '100%', padding: 8, borderRadius: 6, border: '1px solid #f87171',
+                background: 'transparent', color: '#f87171', fontSize: 12, fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >🛑 停止</button>
+          </div>
+        ) : (
+          /* スプリント開始フォーム */
+          <div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8, lineHeight: 1.5 }}>
+              予算を指定すると、その予算分のバックテストを自動で連続実行します。
+              時代をローテーションしながらデータを蓄積します。
+            </div>
+            <label style={{ display: 'block', fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
+              予算（円）
+              <input
+                type="number" min={100} max={5000} step={100} value={sprintBudget}
+                onChange={e => setSprintBudget(Math.max(100, parseInt(e.target.value) || 100))}
+                style={{
+                  width: '100%', marginTop: 4, padding: 8, fontSize: 14,
+                  background: '#0f1117', border: '1px solid #374151', borderRadius: 4,
+                  color: '#e5e7eb',
+                }}
+              />
+            </label>
+            <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 10, lineHeight: 1.5 }}>
+              ¥{sprintBudget} ≒ {Math.floor(sprintBudget / 0.4)}評価 ≒ {Math.floor(sprintBudget / 0.4 / 25)}runs
+              <br />
+              所要時間の目安: 約{Math.ceil(Math.floor(sprintBudget / 0.4 / 25) * 0.5)}〜{Math.ceil(Math.floor(sprintBudget / 0.4 / 25))}分
+            </div>
+            <button
+              onClick={startSprint}
+              style={{
+                width: '100%', padding: 12, borderRadius: 8, border: 'none',
+                background: '#3b82f6', color: 'white', fontSize: 13, fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >🚀 スプリント開始</button>
+          </div>
+        )}
+
+        {/* 完了スプリントの試算レポート */}
+        {activeSprint?.status === 'completed' && projection && (
+          <div style={{ marginTop: 12, padding: 12, background: '#0f1a2a', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#60a5fa', marginBottom: 8 }}>
+              📊 試算レポート
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 11, color: '#d1d5db', lineHeight: 1.6 }}>
+              <div>現在の打率: <strong>{projection.currentHitRate10d}% ± {projection.currentMargin}%</strong>（n={projection.currentTracked}）</div>
+              <div>発火率: {projection.fireRate}% （評価のうち何%が発火）</div>
+              <div style={{ marginTop: 4, padding: 8, background: '#0a0e1a', borderRadius: 4 }}>
+                同額 ¥{projection.additionalBudgetYen} 追加投資した場合:
+                <br />
+                追跡件数 n={projection.currentTracked} → <strong>n={projection.projectedTracked}</strong>
+                <br />
+                信頼区間 ±{projection.currentMargin}% → <strong>±{projection.projectedMargin}%</strong>
+                <span style={{ color: '#34d399', marginLeft: 6 }}>（{projection.marginImprovement}%精度向上）</span>
+              </div>
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4 }}>💡 {projection.note}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 時代別ダッシュボード */}

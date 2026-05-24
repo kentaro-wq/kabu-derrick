@@ -175,3 +175,60 @@ export async function fetchOHLCVHistory(
 export { getIdToken }
 
 export const isJQuantsConfigured = !!REFRESH_TOKEN
+
+/**
+ * キャッシュ付きOHLCV取得
+ *
+ * Supabaseの jquants_ohlcv_cache を参照し、12時間以内のキャッシュがあれば再利用。
+ * スプリント実行で同じデータを何度も使うときに大幅な速度向上。
+ *
+ * 引数 ohlcvCache を渡すとメモリ内でも共有でき、1回のスプリントで実質ゼロコスト。
+ */
+export async function fetchOHLCVHistoryCached(
+  ticker: string,
+  days = 380,
+  idToken: string,
+  options?: {
+    memoryCache?: Map<string, import('./technicals').OHLCVBar[]>
+    ttlHours?: number
+  },
+): Promise<import('./technicals').OHLCVBar[]> {
+  // 1. メモリキャッシュ確認
+  if (options?.memoryCache?.has(ticker)) {
+    return options.memoryCache.get(ticker)!.slice(-days)
+  }
+
+  // 2. Supabaseキャッシュ確認
+  const ttlHours = options?.ttlHours ?? 12
+  const { data: cached } = await adminSupabase
+    .from('jquants_ohlcv_cache')
+    .select('bars, cached_at')
+    .eq('ticker', ticker)
+    .single()
+
+  if (cached?.bars && cached.cached_at) {
+    const ageHours = (Date.now() - new Date(cached.cached_at).getTime()) / (1000 * 60 * 60)
+    if (ageHours < ttlHours) {
+      const bars = cached.bars as import('./technicals').OHLCVBar[]
+      options?.memoryCache?.set(ticker, bars)
+      return bars.slice(-days)
+    }
+  }
+
+  // 3. 鮮度切れ or 未キャッシュ → 取得して保存
+  const fresh = await fetchOHLCVHistory(ticker, Math.max(days, 380), idToken)
+  if (fresh.length > 0) {
+    options?.memoryCache?.set(ticker, fresh)
+    await adminSupabase
+      .from('jquants_ohlcv_cache')
+      .upsert({
+        ticker,
+        bars: fresh,
+        date_from: fresh[0]?.date,
+        date_to: fresh[fresh.length - 1]?.date,
+        cached_at: new Date().toISOString(),
+      }, { onConflict: 'ticker' })
+      .then(() => {}, e => console.error('[jquants] cache upsert error:', e))
+  }
+  return fresh.slice(-days)
+}
