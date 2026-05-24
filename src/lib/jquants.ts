@@ -136,18 +136,20 @@ export async function fetchOHLCVHistory(
   if (!idToken) return []
 
   const code = toJQuantsCode(ticker)
+  // J-Quants Free プランは 12週間遅延データ。end_date を 100日前に設定して範囲内に収める
   const to = new Date()
-  const from = new Date()
+  to.setDate(to.getDate() - 100)
+  const from = new Date(to)
   from.setDate(from.getDate() - Math.ceil(days * 1.6)) // 土日・祝日考慮で多めに取得
 
   const fromStr = from.toISOString().slice(0, 10)
   const toStr = to.toISOString().slice(0, 10)
 
   try {
-    // V2 API: /v2/equities/bars/daily（ページネーション対応）
+    // V2 API: /v2/equities/bars/daily（パラメータ名は start_date/end_date）
     const allBars: DailyBarV2[] = []
     let paginationKey: string | undefined
-    const baseUrl = `https://api.jquants.com/v2/equities/bars/daily?code=${code}&from=${fromStr}&to=${toStr}`
+    const baseUrl = `https://api.jquants.com/v2/equities/bars/daily?code=${code}&start_date=${fromStr}&end_date=${toStr}`
     let safety = 0
     do {
       const url = paginationKey
