@@ -23,10 +23,6 @@
     {
       "path": "/api/backtest/cron",
       "schedule": "0 17 * * *"
-    },
-    {
-      "path": "/api/backtest/sprint/tick",
-      "schedule": "*/15 * * * *"
     }
   ]
 }
