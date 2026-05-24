@@ -23,7 +23,9 @@ import {
 } from '@/lib/backtest'
 import type { OHLCVBar } from '@/lib/technicals'
 
-export const maxDuration = 800
+// Vercelプラン上限に合わせる（Hobby:60s / Pro:300s）
+// バックテスト本体はキャッシュ活用で200秒以内に収まる
+export const maxDuration = 300
 
 interface BacktestRequest {
   name?: string
