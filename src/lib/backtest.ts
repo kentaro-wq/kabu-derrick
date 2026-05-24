@@ -128,8 +128,10 @@ export async function judgeWithClaude(
   fewShot?: FewShotBundle,
 ): Promise<SignalJudgment> {
   const fewShotBlock = fewShot ? formatFewShotBlock(fewShot) : ''
-  const prompt = `あなたは日本株のテクニカル・ファンダメンタル分析の専門家です。
-以下の銘柄データを分析し、「今から10〜20営業日以内に+5%以上の上昇が起こる確率が高い局面かどうか」を判定してください。
+  const prompt = `あなたは日本株の「爆上がり局面」を見抜く専門家です。
+
+目的: 今から10〜20営業日以内に **+15%以上の急騰** が起こる確率が高い銘柄を見つけてください。
+凡庸な +5% 程度の上昇は要りません。狙うのは大きく動く稀少な局面です。
 ${fewShotBlock ? '\n' + fewShotBlock + '\n' : ''}
 銘柄: ${name}（${ticker}）
 
@@ -140,24 +142,34 @@ ${indicatorSummary}
 ${fundamentalSummary}
 
 ---
-判定ルール:
-- 確信が持てる場合のみ fire: true にしてください
-- 「わからない」「どちらとも言えない」場合は fire: false、score: 2以下にしてください
-- fire: true にするのは「複数の強いシグナルが重なっている局面」のみです
-- 以下の高確率条件を重視してください:
-  ・出来高が20日平均の2.5倍以上 かつ 陽線
-  ・ゴールデンクロス（直近3日以内）
-  ・25日MA・75日MA両方を上抜けている
-  ・RSIが40〜60の範囲（買われすぎでも売られすぎでもない）
-  ・業績が成長傾向（売上・利益の前期比プラス）
-- リスク要因（割高PER、業績悪化、過熱RSI等）があれば正直に記載してください
+重要な思想:
+1. 「教科書的に全部揃ってる」必要はない。爆上がりは「凡庸に見えるけど何かが違う」ことも多い。
+2. AI のあなたが、表面的な指標だけでは見落とす「組合せの妙」「文脈」を読んでください。
+3. ただし、確信が持てない時は無理に発火しない。「わからない」なら fire: false。
+
+爆上がり予兆として重視するもの（実際の過去データから抽出）:
+- **ゴールデンクロス（直近3日以内）**: 爆上がり群で 3.7倍 多く観察される最強の予兆
+- **MA25を上抜け** + 上昇トレンド初動の兆し
+- **MA75 を**まだ上抜けてなくてもOK（長期下落からの反発パターンも爆上がる）
+- **出来高は急増していなくてもOK**（1.5倍程度でも爆上がりあり）
+- **RSI 40〜70 まで許容**（過熱気味でも勢いがあれば爆上がる）
+- 連続陽線・直近安値からの反発
+
+避けるべき:
+- 既に明らかに高値追いで RSI 75+ の極度の過熱
+- 出来高が枯れて方向感のない停滞
+
+スコアの目安:
+- 5: 強い確信、複数の爆上がり予兆が重なっている
+- 4: そこそこ確信、主要な予兆が揃っている
+- 3以下: 微妙、もしくは普通の上昇候補に過ぎない（発火しない）
 
 以下のJSON形式のみで回答してください（余計なテキスト不要）:
 {
   "fire": true,
   "score": 4,
-  "conditions_met": ["出来高急増(3.2倍)", "ゴールデンクロス", "MA25・MA75上抜け"],
-  "reasoning": "なぜ高確率と判断したか（2〜3文）",
+  "conditions_met": ["ゴールデンクロス", "MA25上抜け初動", "出来高じわじわ増"],
+  "reasoning": "なぜ爆上がりすると判断したか（2〜3文）",
   "risk_factors": "リスク要因があれば記載、なければ「特になし」"
 }`
 
@@ -180,7 +192,7 @@ ${fundamentalSummary}
 }
 
 /** 現プロンプト版のハッシュ（変更を追跡）— 簡易的にプロンプト先頭を返す */
-export const PROMPT_VERSION = '2026-05-v1'
+export const PROMPT_VERSION = '2026-05-v2-surge'
 
 export interface BacktestCandidate {
   ticker: string
@@ -334,9 +346,10 @@ export async function evaluateCandidate(
     judgment,
     indicators,
     outcomes: {
-      price5d: p5,   pct5d: p5  != null ? calcPct(p5)  : null, hit5d:  p5  != null ? calcPct(p5)  >= 3.0 : null,
-      price10d: p10, pct10d: p10 != null ? calcPct(p10) : null, hit10d: p10 != null ? calcPct(p10) >= 5.0 : null,
-      price20d: p20, pct20d: p20 != null ? calcPct(p20) : null, hit20d: p20 != null ? calcPct(p20) >= 5.0 : null,
+      // 爆上がり狙いに合わせて閾値を引き上げ（5/10/20日後でそれぞれ +5/+10/+15%）
+      price5d: p5,   pct5d: p5  != null ? calcPct(p5)  : null, hit5d:  p5  != null ? calcPct(p5)  >= 5.0  : null,
+      price10d: p10, pct10d: p10 != null ? calcPct(p10) : null, hit10d: p10 != null ? calcPct(p10) >= 10.0 : null,
+      price20d: p20, pct20d: p20 != null ? calcPct(p20) : null, hit20d: p20 != null ? calcPct(p20) >= 15.0 : null,
     },
   }
 }
