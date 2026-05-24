@@ -126,7 +126,12 @@ export default function ScannerPage() {
       {/* ヘッダー */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
         <Link href="/" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: '20px' }}>←</Link>
-        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>📡 シグナルスキャナー</h1>
+        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0, flex: 1 }}>📡 シグナルスキャナー</h1>
+        <Link href="/backtest" style={{
+          color: '#60a5fa', textDecoration: 'none', fontSize: '12px',
+          background: '#1a2333', border: '1px solid #3b82f6', borderRadius: 6,
+          padding: '4px 10px', fontWeight: 600,
+        }}>🔬 バックテスト</Link>
       </div>
 
       {/* 打率ダッシュボード */}
