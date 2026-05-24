@@ -71,7 +71,13 @@ export async function runSprintTick(
 
   const validUniverse = universeWithBars.filter(u => u.bars.length > 30)
   if (validUniverse.length < 10) {
-    return { runsCompleted: 0, done: false, reason: 'insufficient universe data' }
+    // 診断情報を含める
+    const sample = universeWithBars.slice(0, 5).map(u => ({ ticker: u.ticker, bars: u.bars.length }))
+    return {
+      runsCompleted: 0,
+      done: false,
+      reason: `insufficient universe data: ${validUniverse.length}/${universeWithBars.length} valid. samples=${JSON.stringify(sample)}`,
+    }
   }
 
   const commonDates = getCommonTradingDates(validUniverse)
