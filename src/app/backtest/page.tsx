@@ -124,6 +124,27 @@ interface InsightsResponse {
   conditions: ConditionStat[]
 }
 
+interface ConfMatrix { tp: number; fp: number; fn: number; tn: number; total: number }
+interface ConfMetrics {
+  precision: number | null
+  recall: number | null
+  specificity: number | null
+  missRate: number | null
+  accuracy: number | null
+  baseRate: number | null
+  f1: number | null
+  fireRate: number | null
+}
+interface MetricsResponse {
+  total: number
+  message?: string
+  horizons?: {
+    '5d':  { matrix: ConfMatrix; metrics: ConfMetrics }
+    '10d': { matrix: ConfMatrix; metrics: ConfMetrics }
+    '20d': { matrix: ConfMatrix; metrics: ConfMetrics }
+  }
+}
+
 export default function BacktestPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [periodStats, setPeriodStats] = useState<PeriodStat[]>([])
@@ -144,6 +165,8 @@ export default function BacktestPage() {
   const [sprintFewShot, setSprintFewShot] = useState(false)
   const [insights, setInsights] = useState<InsightsResponse | null>(null)
   const [showInsights, setShowInsights] = useState(false)
+  const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
+  const [metricsHorizon, setMetricsHorizon] = useState<'5d' | '10d' | '20d'>('10d')
 
   // 設定パラメータ
   const [sampleSize, setSampleSize] = useState(10)
@@ -152,11 +175,12 @@ export default function BacktestPage() {
   async function loadRuns() {
     setLoading(true)
     try {
-      const [runsRes, autoRes, sprintRes, insightsRes] = await Promise.all([
+      const [runsRes, autoRes, sprintRes, insightsRes, metricsRes] = await Promise.all([
         fetch('/api/backtest/runs').then(r => r.json()),
         fetch('/api/backtest/auto').then(r => r.json()),
         fetch('/api/backtest/sprint/status').then(r => r.json()),
         fetch('/api/backtest/insights').then(r => r.json()),
+        fetch('/api/backtest/metrics').then(r => r.json()),
       ])
       setRuns(runsRes.runs ?? [])
       setPeriodStats(runsRes.periodStats ?? [])
@@ -164,6 +188,7 @@ export default function BacktestPage() {
       setActiveSprint(sprintRes.sprint ?? null)
       setProjection(sprintRes.projection ?? null)
       setInsights(insightsRes)
+      setMetrics(metricsRes)
     } finally {
       setLoading(false)
     }
@@ -468,6 +493,94 @@ export default function BacktestPage() {
           </div>
         )}
       </div>
+
+      {/* 多角的評価 — 混同行列ベース */}
+      {metrics?.horizons && metrics.total > 0 && (() => {
+        const h = metrics.horizons[metricsHorizon]
+        const m = h.matrix
+        const mt = h.metrics
+        return (
+          <div style={{ background: '#1a1d27', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>🎯 多角的評価（n={metrics.total}）</div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['5d','10d','20d'] as const).map(h => (
+                  <button key={h} onClick={() => setMetricsHorizon(h)} style={{
+                    padding: '3px 8px', fontSize: 10, borderRadius: 4, border: 'none', cursor: 'pointer',
+                    background: metricsHorizon === h ? '#3b82f6' : '#0f1117',
+                    color: metricsHorizon === h ? 'white' : '#9ca3af',
+                  }}>{h}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* 混同行列 2x2 */}
+            <div style={{ background: '#0f1117', borderRadius: 6, padding: 10, marginBottom: 10 }}>
+              <div style={{ fontSize: 9, color: '#6b7280', marginBottom: 6, textAlign: 'center' }}>
+                混同行列（{metricsHorizon}後 +{metricsHorizon === '5d' ? 3 : 5}%以上を「上昇」と判定）
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: 4, fontSize: 11 }}>
+                <div></div>
+                <div style={{ textAlign: 'center', color: '#34d399', fontSize: 10 }}>実際に上昇</div>
+                <div style={{ textAlign: 'center', color: '#f87171', fontSize: 10 }}>上昇せず</div>
+
+                <div style={{ color: '#fbbf24', fontSize: 10, alignSelf: 'center' }}>🔥 発火</div>
+                <div style={{ background: '#0f2d1f', padding: 8, borderRadius: 4, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: '#34d399' }}>当てた</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#34d399' }}>{m.tp}</div>
+                </div>
+                <div style={{ background: '#2d0f0f', padding: 8, borderRadius: 4, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: '#f87171' }}>誤判断</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#f87171' }}>{m.fp}</div>
+                </div>
+
+                <div style={{ color: '#6b7280', fontSize: 10, alignSelf: 'center' }}>⚪ 見送り</div>
+                <div style={{ background: '#2d2a0f', padding: 8, borderRadius: 4, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: '#fbbf24' }}>見逃した</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#fbbf24' }}>{m.fn}</div>
+                </div>
+                <div style={{ background: '#1a1d27', padding: 8, borderRadius: 4, textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: '#9ca3af' }}>正しく避けた</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#d1d5db' }}>{m.tn}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* 各種指標 */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 11, color: '#d1d5db' }}>
+              <div style={{ background: '#0f1a2a', padding: 8, borderRadius: 4 }}>
+                <div style={{ fontSize: 9, color: '#60a5fa', marginBottom: 2 }}>適合率（発火時の的中率）</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#60a5fa' }}>{mt.precision ?? '—'}%</div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>発火{m.tp + m.fp}件中 {m.tp}件的中</div>
+              </div>
+              <div style={{ background: '#1a0f2a', padding: 8, borderRadius: 4 }}>
+                <div style={{ fontSize: 9, color: '#a78bfa', marginBottom: 2 }}>再現率（上昇捕捉率）</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#a78bfa' }}>{mt.recall ?? '—'}%</div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>上昇{m.tp + m.fn}件中 {m.tp}件捕捉</div>
+              </div>
+              <div style={{ background: '#2a0f1a', padding: 8, borderRadius: 4 }}>
+                <div style={{ fontSize: 9, color: '#fbbf24', marginBottom: 2 }}>見逃し率</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#fbbf24' }}>{mt.missRate ?? '—'}%</div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>上がったのに見送り {m.fn}件</div>
+              </div>
+              <div style={{ background: '#0f2a1a', padding: 8, borderRadius: 4 }}>
+                <div style={{ fontSize: 9, color: '#34d399', marginBottom: 2 }}>特異度（避けられた率）</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#34d399' }}>{mt.specificity ?? '—'}%</div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>外れ{m.fp + m.tn}件中 {m.tn}件避けた</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 8, padding: 8, background: '#0f1117', borderRadius: 4, fontSize: 10, color: '#9ca3af', lineHeight: 1.6 }}>
+              <div>📈 ベースレート: <strong>{mt.baseRate ?? '—'}%</strong> （全候補が自然に上昇した率＝Claudeなしの基準）</div>
+              <div>🔥 発火率: <strong>{mt.fireRate ?? '—'}%</strong></div>
+              <div>🎯 F1スコア: <strong>{mt.f1 ?? '—'}%</strong> （適合率と再現率の調和平均）</div>
+              <div style={{ marginTop: 4, color: '#6b7280', fontSize: 9 }}>
+                💡 Claude vs ランダム: 適合率 {mt.precision ?? 0}% が ベースレート {mt.baseRate ?? 0}% を{(mt.precision ?? 0) > (mt.baseRate ?? 0) ? '上回って' : '下回って'}いれば、判定に価値あり
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 条件別打率（Phase 3 統計分析） */}
       {insights && insights.totalFired > 0 && (
