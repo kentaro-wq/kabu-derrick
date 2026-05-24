@@ -144,23 +144,36 @@ export async function fetchOHLCVHistory(
   const toStr = to.toISOString().slice(0, 10)
 
   try {
-    // V2 API: /v2/equities/bars/daily
-    const url = `https://api.jquants.com/v2/equities/bars/daily?code=${code}&from=${fromStr}&to=${toStr}`
-    const res = await fetch(url, {
-      headers: authHeaders(idToken),
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      console.error(`[jquants] v2 bars ${code} HTTP ${res.status}: ${text.slice(0, 200)}`)
-      return []
+    // V2 API: /v2/equities/bars/daily（ページネーション対応）
+    const allBars: DailyBarV2[] = []
+    let paginationKey: string | undefined
+    const baseUrl = `https://api.jquants.com/v2/equities/bars/daily?code=${code}&from=${fromStr}&to=${toStr}`
+    let safety = 0
+    do {
+      const url = paginationKey
+        ? `${baseUrl}&pagination_key=${encodeURIComponent(paginationKey)}`
+        : baseUrl
+      const res = await fetch(url, {
+        headers: authHeaders(idToken),
+        signal: AbortSignal.timeout(10000),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        console.error(`[jquants] v2 bars ${code} HTTP ${res.status}: ${text.slice(0, 200)}`)
+        break
+      }
+      const data = await res.json()
+      const chunk: DailyBarV2[] = data.data ?? []
+      allBars.push(...chunk)
+      paginationKey = data.pagination_key
+      safety++
+      if (safety > 20) break  // 最大20ページ（=数千件）で安全停止
+    } while (paginationKey)
+
+    if (allBars.length === 0) {
+      console.error(`[jquants] v2 bars ${code} empty response`)
     }
-    const data = await res.json()
-    const bars: DailyBarV2[] = data.data ?? []
-    if (bars.length === 0) {
-      console.error(`[jquants] v2 bars ${code} empty. keys: ${Object.keys(data).join(',')}`)
-    }
-    return bars
+    return allBars
       .filter(b => b.C != null && b.Vo != null)
       .slice(-days)
       .map(b => ({
