@@ -6,33 +6,23 @@
 import { adminSupabase } from '@/lib/supabase'
 import { recalcNisaUsed } from '@/lib/nisa-sync'
 
-const REFRESH_TOKEN = process.env.JQUANTS_REFRESH_TOKEN
+// J-Quants V2 仕様: APIキーを X-API-Key ヘッダーで直接送る
+// 環境変数名は互換性のため JQUANTS_REFRESH_TOKEN のまま使用
+const API_KEY = process.env.JQUANTS_REFRESH_TOKEN
 
 // 4桁コード→J-Quants用5桁コード（国内株は末尾0）
 function toJQuantsCode(ticker: string): string {
   return /^\d{4}$/.test(ticker) ? ticker + '0' : ticker
 }
 
-// リフレッシュトークン → IDトークン（24時間有効）
-// 公式仕様: refreshtoken をクエリパラメータで送る
+// V2では事前認証不要。APIキーをそのまま返す（既存コードとの互換用）
 async function getIdToken(): Promise<string | null> {
-  if (!REFRESH_TOKEN) return null
-  try {
-    const url = `https://api.jquants.com/v1/token/auth_refresh?refreshtoken=${encodeURIComponent(REFRESH_TOKEN)}`
-    const res = await fetch(url, {
-      method: 'POST',
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!res.ok) {
-      console.error(`[jquants] auth_refresh failed: ${res.status} ${await res.text().catch(() => '')}`)
-      return null
-    }
-    const data = await res.json()
-    return data.idToken ?? null
-  } catch (e) {
-    console.error('[jquants] auth_refresh exception:', e)
-    return null
-  }
+  return API_KEY ?? null
+}
+
+// V2 仕様の認証ヘッダーを生成
+function authHeaders(apiKey: string): Record<string, string> {
+  return { 'X-API-Key': apiKey }
 }
 
 interface DailyQuote {
@@ -47,13 +37,13 @@ interface DailyQuote {
 }
 
 // 指定銘柄の最新日次株価を取得
-async function fetchLatestPrice(ticker: string, idToken: string): Promise<{ price: number; date: string } | null> {
+async function fetchLatestPrice(ticker: string, apiKey: string): Promise<{ price: number; date: string } | null> {
   try {
     const code = toJQuantsCode(ticker)
     const res = await fetch(
       `https://api.jquants.com/v1/prices/daily_quotes?code=${code}`,
       {
-        headers: { Authorization: `Bearer ${idToken}` },
+        headers: authHeaders(apiKey),
         signal: AbortSignal.timeout(10000),
       }
     )
@@ -152,7 +142,7 @@ export async function fetchOHLCVHistory(
     const res = await fetch(
       `https://api.jquants.com/v1/prices/daily_quotes?code=${code}&from=${fromStr}&to=${toStr}`,
       {
-        headers: { Authorization: `Bearer ${idToken}` },
+        headers: authHeaders(idToken),
         signal: AbortSignal.timeout(10000),
       }
     )
@@ -178,7 +168,7 @@ export async function fetchOHLCVHistory(
 /** IDトークンを外部から使えるようにエクスポート */
 export { getIdToken }
 
-export const isJQuantsConfigured = !!REFRESH_TOKEN
+export const isJQuantsConfigured = !!API_KEY
 
 /**
  * キャッシュ付きOHLCV取得
