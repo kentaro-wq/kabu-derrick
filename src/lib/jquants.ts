@@ -14,19 +14,23 @@ function toJQuantsCode(ticker: string): string {
 }
 
 // リフレッシュトークン → IDトークン（24時間有効）
+// 公式仕様: refreshtoken をクエリパラメータで送る
 async function getIdToken(): Promise<string | null> {
   if (!REFRESH_TOKEN) return null
   try {
-    const res = await fetch('https://api.jquants.com/v1/token/auth_refresh', {
+    const url = `https://api.jquants.com/v1/token/auth_refresh?refreshtoken=${encodeURIComponent(REFRESH_TOKEN)}`
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshtoken: REFRESH_TOKEN }),
       signal: AbortSignal.timeout(10000),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.error(`[jquants] auth_refresh failed: ${res.status} ${await res.text().catch(() => '')}`)
+      return null
+    }
     const data = await res.json()
     return data.idToken ?? null
-  } catch {
+  } catch (e) {
+    console.error('[jquants] auth_refresh exception:', e)
     return null
   }
 }
