@@ -55,11 +55,12 @@ export async function runSprintTick(
   const memCache: MemCache = new Map()
 
   // OHLCV をユニバース分まとめて取得（キャッシュ活用）
-  // 並列度を抑えて DB と J-Quants 両方に優しく
+  // Vercel Hobby plan の 60秒上限を考慮して 30銘柄に絞る（キャッシュ蓄積で2回目以降は高速化）
+  const SUB_UNIVERSE = BACKTEST_UNIVERSE.slice(0, 30)
   const universeWithBars: { ticker: string; name: string; bars: OHLCVBar[] }[] = []
-  const FETCH_PARALLEL = 8
-  for (let i = 0; i < BACKTEST_UNIVERSE.length; i += FETCH_PARALLEL) {
-    const batch = BACKTEST_UNIVERSE.slice(i, i + FETCH_PARALLEL)
+  const FETCH_PARALLEL = 5
+  for (let i = 0; i < SUB_UNIVERSE.length; i += FETCH_PARALLEL) {
+    const batch = SUB_UNIVERSE.slice(i, i + FETCH_PARALLEL)
     const results = await Promise.all(
       batch.map(async (u) => {
         const bars = await fetchOHLCVHistoryCached(u.ticker, 380, idToken, { memoryCache: memCache })
