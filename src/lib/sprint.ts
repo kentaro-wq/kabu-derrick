@@ -15,6 +15,7 @@ import {
   PERIOD_PRESETS,
   periodToDateRange,
   PROMPT_VERSION,
+  fetchFewShotExamples,
 } from '@/lib/backtest'
 import type { OHLCVBar } from '@/lib/technicals'
 
@@ -75,6 +76,12 @@ export async function runSprintTick(
 
   const commonDates = getCommonTradingDates(validUniverse)
 
+  // Few-shot 学習モードなら過去事例を取得（1tickで1回だけ）
+  const fewShot = sprint.use_few_shot ? await fetchFewShotExamples(4) : undefined
+  if (sprint.use_few_shot && fewShot) {
+    console.log(`[sprint] few-shot: ${fewShot.hits.length} hits, ${fewShot.misses.length} misses`)
+  }
+
   // 予算に達するか maxRunsPerTick に達するまでミニ・バックテストを繰り返す
   let runsCompleted = 0
   let costAccumulated = sprint.total_cost_yen
@@ -128,7 +135,7 @@ export async function runSprintTick(
       const CONCURRENT = 5
       for (let i = 0; i < candidates.length; i += CONCURRENT) {
         const chunk = candidates.slice(i, i + CONCURRENT)
-        const evaluations = await Promise.all(chunk.map(c => evaluateCandidate(c)))
+        const evaluations = await Promise.all(chunk.map(c => evaluateCandidate(c, fewShot)))
 
         for (let j = 0; j < chunk.length; j++) {
           const c = chunk[j]

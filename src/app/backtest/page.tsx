@@ -109,6 +109,21 @@ interface Projection {
   note: string
 }
 
+interface ConditionStat {
+  label: string
+  count: number
+  hits: number
+  hitRate: number
+  avgReturn: number
+}
+
+interface InsightsResponse {
+  totalFired: number
+  overallHitRate?: number
+  message?: string
+  conditions: ConditionStat[]
+}
+
 export default function BacktestPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [periodStats, setPeriodStats] = useState<PeriodStat[]>([])
@@ -126,6 +141,9 @@ export default function BacktestPage() {
   const [activeSprint, setActiveSprint] = useState<Sprint | null>(null)
   const [projection, setProjection] = useState<Projection | null>(null)
   const [sprintBudget, setSprintBudget] = useState(600)
+  const [sprintFewShot, setSprintFewShot] = useState(false)
+  const [insights, setInsights] = useState<InsightsResponse | null>(null)
+  const [showInsights, setShowInsights] = useState(false)
 
   // 設定パラメータ
   const [sampleSize, setSampleSize] = useState(10)
@@ -134,16 +152,18 @@ export default function BacktestPage() {
   async function loadRuns() {
     setLoading(true)
     try {
-      const [runsRes, autoRes, sprintRes] = await Promise.all([
+      const [runsRes, autoRes, sprintRes, insightsRes] = await Promise.all([
         fetch('/api/backtest/runs').then(r => r.json()),
         fetch('/api/backtest/auto').then(r => r.json()),
         fetch('/api/backtest/sprint/status').then(r => r.json()),
+        fetch('/api/backtest/insights').then(r => r.json()),
       ])
       setRuns(runsRes.runs ?? [])
       setPeriodStats(runsRes.periodStats ?? [])
       setAutoEnabled(autoRes.enabled ?? null)
       setActiveSprint(sprintRes.sprint ?? null)
       setProjection(sprintRes.projection ?? null)
+      setInsights(insightsRes)
     } finally {
       setLoading(false)
     }
@@ -167,12 +187,13 @@ export default function BacktestPage() {
   }, [activeSprint?.id, activeSprint?.status])
 
   async function startSprint() {
-    if (!confirm(`予算 ¥${sprintBudget} でスプリントを開始しますか？\n約${Math.floor(sprintBudget / 0.4)}評価を自動実行します。`)) return
+    const mode = sprintFewShot ? '学習モード（過去事例参照）' : 'ベースライン'
+    if (!confirm(`予算 ¥${sprintBudget} でスプリント開始？\n${mode}\n約${Math.floor(sprintBudget / (sprintFewShot ? 0.8 : 0.4))}評価を実行します。`)) return
     try {
       const res = await fetch('/api/backtest/sprint/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ budgetYen: sprintBudget }),
+        body: JSON.stringify({ budgetYen: sprintBudget, useFewShot: sprintFewShot }),
       })
       const d = await res.json()
       if (d.ok) {
@@ -376,10 +397,43 @@ export default function BacktestPage() {
                 }}
               />
             </label>
+
+            {/* 学習モードトグル */}
+            <div
+              onClick={() => setSprintFewShot(!sprintFewShot)}
+              style={{
+                background: sprintFewShot ? '#1c2a1f' : '#0f1117',
+                border: '1px solid ' + (sprintFewShot ? '#34d399' : '#374151'),
+                borderRadius: 6, padding: 10, marginBottom: 10, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}
+            >
+              <div style={{
+                width: 36, height: 20, borderRadius: 10,
+                background: sprintFewShot ? '#34d399' : '#4b5563',
+                position: 'relative', flexShrink: 0,
+              }}>
+                <span style={{
+                  position: 'absolute', top: 2, left: sprintFewShot ? 18 : 2,
+                  width: 16, height: 16, borderRadius: '50%', background: 'white',
+                  transition: 'left 0.2s',
+                }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: sprintFewShot ? '#34d399' : '#9ca3af' }}>
+                  🧠 学習モード（過去事例を参照）
+                </div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>
+                  オン: 過去の的中/外れ事例をプロンプトに埋め込み、Claudeが経験から判定。コスト2倍
+                </div>
+              </div>
+            </div>
+
             <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 10, lineHeight: 1.5 }}>
-              ¥{sprintBudget} ≒ {Math.floor(sprintBudget / 0.4)}評価 ≒ {Math.floor(sprintBudget / 0.4 / 25)}runs
+              ¥{sprintBudget} ≒ {Math.floor(sprintBudget / (sprintFewShot ? 0.8 : 0.4))}評価
+              （{sprintFewShot ? '学習モード' : 'ベースライン'}: ¥{sprintFewShot ? 0.8 : 0.4}/評価）
               <br />
-              所要時間の目安: 約{Math.ceil(Math.floor(sprintBudget / 0.4 / 25) * 0.5)}〜{Math.ceil(Math.floor(sprintBudget / 0.4 / 25))}分
+              所要時間: 約{Math.ceil(Math.floor(sprintBudget / (sprintFewShot ? 0.8 : 0.4) / 25) * 0.5)}〜{Math.ceil(Math.floor(sprintBudget / (sprintFewShot ? 0.8 : 0.4) / 25))}分
             </div>
             <button
               onClick={startSprint}
@@ -414,6 +468,58 @@ export default function BacktestPage() {
           </div>
         )}
       </div>
+
+      {/* 条件別打率（Phase 3 統計分析） */}
+      {insights && insights.totalFired > 0 && (
+        <div style={{ background: '#1a1d27', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div
+            onClick={() => setShowInsights(!showInsights)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              🔍 条件別打率（n={insights.totalFired}） 全体: {insights.overallHitRate}%
+            </div>
+            <span style={{ fontSize: 14, color: '#6b7280' }}>{showInsights ? '▼' : '▶'}</span>
+          </div>
+          {showInsights && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 8, lineHeight: 1.5 }}>
+                全体平均より高い打率の条件 = <span style={{ color: '#34d399' }}>緑</span>。
+                低い条件 = <span style={{ color: '#f87171' }}>赤</span>。サンプル5件未満は表示なし。
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {insights.conditions.map(c => {
+                  const diff = c.hitRate - (insights.overallHitRate ?? 0)
+                  const color = diff > 5 ? '#34d399' : diff < -5 ? '#f87171' : '#9ca3af'
+                  const isComplex = c.label.startsWith('【複合】')
+                  return (
+                    <div
+                      key={c.label}
+                      style={{
+                        background: isComplex ? '#0f1a2a' : '#0f1117',
+                        padding: '6px 8px', borderRadius: 4,
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        borderLeft: '3px solid ' + color,
+                      }}
+                    >
+                      <div style={{ fontSize: 11, color: '#d1d5db' }}>{c.label}</div>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 11 }}>
+                        <span style={{ color: '#6b7280' }}>n={c.count}</span>
+                        <span style={{ color: c.avgReturn >= 0 ? '#34d399' : '#f87171' }}>
+                          {c.avgReturn >= 0 ? '+' : ''}{c.avgReturn}%
+                        </span>
+                        <span style={{ color, fontWeight: 600, minWidth: 38, textAlign: 'right' }}>
+                          {c.hitRate}%
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 時代別ダッシュボード */}
       {periodStats.length > 0 && (

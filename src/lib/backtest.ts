@@ -7,6 +7,7 @@
  * - これを徹底することで「もし当時その判定をしていたら」という現実的な検証になる
  */
 import { calcIndicators, summarizeIndicators, type OHLCVBar } from '@/lib/technicals'
+import { adminSupabase } from '@/lib/supabase'
 import Anthropic from '@anthropic-ai/sdk'
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -19,9 +20,104 @@ export interface SignalJudgment {
   risk_factors: string
 }
 
+/** Few-shot 用の過去事例 */
+export interface FewShotExample {
+  ticker: string
+  name: string
+  signal_date: string
+  volume_ratio: number | null
+  rsi14: number | null
+  golden_cross: boolean
+  above_ma25: boolean
+  above_ma75: boolean
+  conditions_met: string[]
+  pct_10d: number
+  hit_10d: boolean
+}
+
+export interface FewShotBundle {
+  hits: FewShotExample[]
+  misses: FewShotExample[]
+}
+
+/**
+ * 過去の発火シグナル (claude_fire=true) から few-shot 事例を取得
+ *
+ * - 的中事例: pct_10d 上位 N 件
+ * - 外れ事例: pct_10d 下位 N 件
+ * - 同じ銘柄に偏らないよう銘柄重複は除外
+ * - 直近データから優先（新しい時代を反映）
+ */
+export async function fetchFewShotExamples(count = 4): Promise<FewShotBundle> {
+  // 発火 + 10日後結果ありの過去シグナル取得
+  const { data } = await adminSupabase
+    .from('backtest_signals')
+    .select('ticker, name, signal_date, volume_ratio, rsi14, golden_cross, above_ma25, above_ma75, conditions_met, pct_10d, hit_10d')
+    .eq('claude_fire', true)
+    .not('pct_10d', 'is', null)
+    .order('signal_date', { ascending: false })
+    .limit(500)  // 直近500件から選定
+
+  const rows = (data ?? []) as FewShotExample[]
+  if (rows.length === 0) return { hits: [], misses: [] }
+
+  // 銘柄重複を除外しながら、的中事例の上位 count 件と外れ事例の下位 count 件
+  const seenHit = new Set<string>()
+  const seenMiss = new Set<string>()
+  const hitsSorted = [...rows].filter(r => r.hit_10d === true).sort((a, b) => b.pct_10d - a.pct_10d)
+  const missesSorted = [...rows].filter(r => r.hit_10d === false).sort((a, b) => a.pct_10d - b.pct_10d)
+
+  const hits: FewShotExample[] = []
+  for (const r of hitsSorted) {
+    if (seenHit.has(r.ticker)) continue
+    seenHit.add(r.ticker)
+    hits.push(r)
+    if (hits.length >= count) break
+  }
+  const misses: FewShotExample[] = []
+  for (const r of missesSorted) {
+    if (seenMiss.has(r.ticker)) continue
+    seenMiss.add(r.ticker)
+    misses.push(r)
+    if (misses.length >= count) break
+  }
+
+  return { hits, misses }
+}
+
+/** Few-shot 事例を Claude プロンプト用のテキストに整形 */
+function formatFewShotBlock(bundle: FewShotBundle): string {
+  if (bundle.hits.length === 0 && bundle.misses.length === 0) return ''
+
+  const fmtRow = (e: FewShotExample, ok: boolean): string => {
+    const parts: string[] = []
+    if (e.volume_ratio != null) parts.push(`出来高${e.volume_ratio}倍`)
+    if (e.rsi14 != null) parts.push(`RSI${e.rsi14}`)
+    if (e.golden_cross) parts.push('GC')
+    if (e.above_ma25) parts.push('MA25↑')
+    if (e.above_ma75) parts.push('MA75↑')
+    const result = ok ? `+${e.pct_10d}%（的中）` : `${e.pct_10d}%（外れ）`
+    return `・${e.name}(${e.ticker}) ${e.signal_date}: ${parts.join(', ')} → 10日後 ${result}`
+  }
+
+  const lines: string[] = []
+  if (bundle.hits.length > 0) {
+    lines.push('【過去の的中事例（参考にしてください）】')
+    bundle.hits.forEach(e => lines.push(fmtRow(e, true)))
+  }
+  if (bundle.misses.length > 0) {
+    lines.push('')
+    lines.push('【過去の外れ事例（同様パターンには注意）】')
+    bundle.misses.forEach(e => lines.push(fmtRow(e, false)))
+  }
+  return lines.join('\n')
+}
+
 /**
  * 同じ判定ロジック（live と backtest で共有）
  * プロンプトを変更したい場合はここを変える → live/backtest 両方に反映される
+ *
+ * fewShot を渡すと in-context learning として活用される
  */
 export async function judgeWithClaude(
   ticker: string,
@@ -29,10 +125,12 @@ export async function judgeWithClaude(
   price: number,
   indicatorSummary: string,
   fundamentalSummary: string,
+  fewShot?: FewShotBundle,
 ): Promise<SignalJudgment> {
+  const fewShotBlock = fewShot ? formatFewShotBlock(fewShot) : ''
   const prompt = `あなたは日本株のテクニカル・ファンダメンタル分析の専門家です。
 以下の銘柄データを分析し、「今から10〜20営業日以内に+5%以上の上昇が起こる確率が高い局面かどうか」を判定してください。
-
+${fewShotBlock ? '\n' + fewShotBlock + '\n' : ''}
 銘柄: ${name}（${ticker}）
 
 【テクニカル指標】
@@ -203,6 +301,7 @@ export function getCommonTradingDates(
 /** 候補1件をClaude判定 + 結果計算 */
 export async function evaluateCandidate(
   c: BacktestCandidate,
+  fewShot?: FewShotBundle,
 ): Promise<{
   judgment: SignalJudgment
   indicators: ReturnType<typeof calcIndicators>
@@ -221,6 +320,7 @@ export async function evaluateCandidate(
   const judgment = await judgeWithClaude(
     c.ticker, c.name, c.priceAtSignal,
     indicatorSummary, fundamentalSummary,
+    fewShot,
   )
 
   // 結果計算（futureBars から取得）
