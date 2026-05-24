@@ -27,10 +27,44 @@ export async function GET(req: Request) {
   // 一覧
   const { data, error } = await adminSupabase
     .from('backtest_runs')
-    .select('id, name, started_at, completed_at, status, total_candidates, total_signals, hit_rate_5d, hit_rate_10d, hit_rate_20d, avg_return_10d, tracked_10d, prompt_version, notes')
+    .select('id, name, started_at, completed_at, status, total_candidates, total_signals, hit_rate_5d, hit_rate_10d, hit_rate_20d, avg_return_10d, tracked_10d, prompt_version, notes, period_label, date_from, date_to, trigger')
     .order('started_at', { ascending: false })
-    .limit(30)
+    .limit(50)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ runs: data ?? [] })
+
+  // 時代別の集計（completed のみ対象）
+  const completed = (data ?? []).filter(r => r.status === 'completed' && r.period_label)
+  const byPeriod = new Map<string, {
+    label: string
+    runCount: number
+    totalSignals: number
+    tracked10d: number
+    hit10d: number
+    avgReturn10d: number
+  }>()
+
+  for (const r of completed) {
+    const key = r.period_label!
+    const cur = byPeriod.get(key) ?? { label: key, runCount: 0, totalSignals: 0, tracked10d: 0, hit10d: 0, avgReturn10d: 0 }
+    cur.runCount++
+    cur.totalSignals += r.total_signals ?? 0
+    cur.tracked10d += r.tracked_10d ?? 0
+    if (r.hit_rate_10d != null && r.tracked_10d) {
+      cur.hit10d += Math.round((r.hit_rate_10d / 100) * r.tracked_10d)
+    }
+    if (r.avg_return_10d != null) cur.avgReturn10d += r.avg_return_10d
+    byPeriod.set(key, cur)
+  }
+
+  const periodStats = [...byPeriod.values()].map(p => ({
+    label: p.label,
+    runCount: p.runCount,
+    totalSignals: p.totalSignals,
+    tracked10d: p.tracked10d,
+    hitRate10d: p.tracked10d > 0 ? Math.round((p.hit10d / p.tracked10d) * 1000) / 10 : null,
+    avgReturn10d: p.runCount > 0 ? Math.round((p.avgReturn10d / p.runCount) * 10) / 10 : null,
+  }))
+
+  return NextResponse.json({ runs: data ?? [], periodStats })
 }

@@ -137,14 +137,20 @@ export function priceAfterNDays(futureBars: OHLCVBar[], n: number): number | nul
   return futureBars[n - 1].close
 }
 
-/** ランダムにN個の営業日付を返す（universeにデータがある日付から） */
+/**
+ * ランダムにN個の営業日付を返す（universeにデータがある日付から）
+ * dateRangeを指定すると、その期間内の日付だけからサンプリング（時代別バックテスト用）
+ */
 export function pickRandomTradingDates(
   allDates: string[],
   count: number,
   earliestIdx = 25,            // 最初の25日はindicator計算に使うので除外
   latestOffsetFromEnd = 20,    // 最後の20日は結果追跡に使うので除外
+  dateRange?: { from?: string; to?: string },
 ): string[] {
-  const usable = allDates.slice(earliestIdx, allDates.length - latestOffsetFromEnd)
+  let usable = allDates.slice(earliestIdx, allDates.length - latestOffsetFromEnd)
+  if (dateRange?.from) usable = usable.filter(d => d >= dateRange.from!)
+  if (dateRange?.to)   usable = usable.filter(d => d <= dateRange.to!)
   if (usable.length === 0) return []
 
   // Fisher-Yates 風にシャッフルしてN個取る
@@ -154,6 +160,25 @@ export function pickRandomTradingDates(
     ;[arr[i], arr[j]] = [arr[j], arr[i]]
   }
   return arr.slice(0, Math.min(count, arr.length)).sort()
+}
+
+/**
+ * 時代ローテーション用のプリセット期間
+ * 経過日数で指定（今日から〜〜日前のレンジ）
+ */
+export const PERIOD_PRESETS = [
+  { label: '直近3ヶ月',   daysAgoMax: 30,  daysAgoMin: 120 },
+  { label: '3〜6ヶ月前',  daysAgoMax: 120, daysAgoMin: 200 },
+  { label: '6〜12ヶ月前', daysAgoMax: 200, daysAgoMin: 365 },
+] as const
+
+/** プリセットから日付範囲を計算 */
+export function periodToDateRange(preset: typeof PERIOD_PRESETS[number]): { from: string; to: string; label: string } {
+  const now = Date.now()
+  const day = 24 * 60 * 60 * 1000
+  const from = new Date(now - preset.daysAgoMin * day).toISOString().slice(0, 10)
+  const to   = new Date(now - preset.daysAgoMax * day).toISOString().slice(0, 10)
+  return { from, to, label: preset.label }
 }
 
 /** 全universeに共通する取引日リストを返す（最も多くの銘柄でデータがある日付の集合） */

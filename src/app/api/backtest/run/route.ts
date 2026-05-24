@@ -30,6 +30,11 @@ interface BacktestRequest {
   sampleSize?: number   // サンプリング日数（デフォルト10日）
   maxCandidatesPerDay?: number  // 各日の最大候補数（コスト制御）
   ohlcvDays?: number    // 過去何日分のOHLCVを取得するか
+  // 時代別バックテスト用
+  periodLabel?: string  // 表示用ラベル（例: "直近3ヶ月"）
+  dateFrom?: string     // YYYY-MM-DD
+  dateTo?: string       // YYYY-MM-DD
+  trigger?: 'manual' | 'cron'
 }
 
 export async function POST(req: Request) {
@@ -42,8 +47,12 @@ export async function POST(req: Request) {
 
   const sampleSize = body.sampleSize ?? 10
   const maxCandidatesPerDay = body.maxCandidatesPerDay ?? 8
-  const ohlcvDays = body.ohlcvDays ?? 250  // 約1年（営業日換算）
+  const ohlcvDays = body.ohlcvDays ?? 380  // 約1.5年分を保持して時代別サンプル可能に
   const runName = body.name ?? `Backtest ${new Date().toISOString().slice(0, 16)}`
+  const trigger = body.trigger ?? 'manual'
+  const periodLabel = body.periodLabel ?? null
+  const dateFrom = body.dateFrom ?? null
+  const dateTo = body.dateTo ?? null
 
   // run レコードを先に作成（status: running）
   const { data: runRow, error: runErr } = await adminSupabase
@@ -53,6 +62,10 @@ export async function POST(req: Request) {
       status: 'running',
       config: { sampleSize, maxCandidatesPerDay, ohlcvDays, universeSize: BACKTEST_UNIVERSE.length },
       prompt_version: PROMPT_VERSION,
+      period_label: periodLabel,
+      date_from: dateFrom,
+      date_to: dateTo,
+      trigger,
     })
     .select()
     .single()
@@ -88,8 +101,14 @@ export async function POST(req: Request) {
     }
 
     // Step 2: 共通取引日からランダムサンプリング
+    // 期間指定があれば、その期間内からだけサンプリング（時代別バックテスト）
     const commonDates = getCommonTradingDates(validUniverse)
-    const sampleDates = pickRandomTradingDates(commonDates, sampleSize)
+    const sampleDates = pickRandomTradingDates(
+      commonDates,
+      sampleSize,
+      25, 20,
+      (dateFrom || dateTo) ? { from: dateFrom ?? undefined, to: dateTo ?? undefined } : undefined,
+    )
     if (sampleDates.length === 0) {
       throw new Error('サンプリング可能な日付が0件')
     }

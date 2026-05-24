@@ -17,6 +17,19 @@ interface Run {
   tracked_10d: number
   prompt_version: string | null
   notes: string | null
+  period_label: string | null
+  date_from: string | null
+  date_to: string | null
+  trigger: 'manual' | 'cron' | null
+}
+
+interface PeriodStat {
+  label: string
+  runCount: number
+  totalSignals: number
+  tracked10d: number
+  hitRate10d: number | null
+  avgReturn10d: number | null
 }
 
 interface Signal {
@@ -68,6 +81,8 @@ function OutcomeChip({ pct, hit }: { pct: number | null; hit: boolean | null }) 
 
 export default function BacktestPage() {
   const [runs, setRuns] = useState<Run[]>([])
+  const [periodStats, setPeriodStats] = useState<PeriodStat[]>([])
+  const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
@@ -84,15 +99,34 @@ export default function BacktestPage() {
   async function loadRuns() {
     setLoading(true)
     try {
-      const res = await fetch('/api/backtest/runs')
-      const d = await res.json()
-      setRuns(d.runs ?? [])
+      const [runsRes, autoRes] = await Promise.all([
+        fetch('/api/backtest/runs').then(r => r.json()),
+        fetch('/api/backtest/auto').then(r => r.json()),
+      ])
+      setRuns(runsRes.runs ?? [])
+      setPeriodStats(runsRes.periodStats ?? [])
+      setAutoEnabled(autoRes.enabled ?? null)
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => { loadRuns() }, [])
+
+  async function handleToggleAuto() {
+    if (autoEnabled === null) return
+    const next = !autoEnabled
+    setAutoEnabled(next)  // 楽観的更新
+    try {
+      await fetch('/api/backtest/auto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      })
+    } catch {
+      setAutoEnabled(!next)  // 失敗時ロールバック
+    }
+  }
 
   async function loadRunDetail(runId: string) {
     setSelectedRun(runId)
@@ -140,10 +174,71 @@ export default function BacktestPage() {
         <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>🔬 バックテスト</h1>
       </div>
 
-      <div style={{ background: '#1a2333', border: '1px solid #2d3148', borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 11, color: '#9ca3af', lineHeight: 1.5 }}>
+      <div style={{ background: '#1a2333', border: '1px solid #2d3148', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 11, color: '#9ca3af', lineHeight: 1.5 }}>
         過去データで予測精度を高速検証。同じプロンプトを過去N日分で実行 → 5/10/20日後の実データで的中判定。
         プロンプトを変えて再実行すれば打率の変化が見える。
       </div>
+
+      {/* 自動実行トグル */}
+      <div style={{
+        background: autoEnabled ? '#0f2a1f' : '#1a1d27',
+        border: '1px solid ' + (autoEnabled ? '#34d399' : '#374151'),
+        borderRadius: 10, padding: 12, marginBottom: 12,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            onClick={handleToggleAuto}
+            disabled={autoEnabled === null}
+            style={{
+              width: 44, height: 24, borderRadius: 12, border: 'none',
+              background: autoEnabled ? '#34d399' : '#4b5563',
+              position: 'relative', cursor: 'pointer', flexShrink: 0,
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3, left: autoEnabled ? 23 : 3,
+              width: 18, height: 18, borderRadius: '50%', background: 'white',
+              transition: 'left 0.2s',
+            }} />
+          </button>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: autoEnabled ? '#34d399' : '#9ca3af' }}>
+              {autoEnabled ? '🟢 半自動稼働中' : '⚫ 自動実行 停止中'}
+            </div>
+            <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+              毎日 02:00 JST に小サイズ実行（25評価/日）。時代を3パターン日替わりローテーション。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 時代別ダッシュボード */}
+      {periodStats.length > 0 && (
+        <div style={{ background: '#1a1d27', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>📅 時代別の10日後打率</div>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${periodStats.length}, 1fr)`, gap: 6 }}>
+            {periodStats.map(p => (
+              <div key={p.label} style={{ background: '#0f1117', borderRadius: 6, padding: 8 }}>
+                <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>{p.label}</div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>
+                  <HitRateBadge rate={p.hitRate10d} n={p.tracked10d} />
+                </div>
+                <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>
+                  {p.runCount}回 / {p.totalSignals}発火
+                </div>
+                {p.avgReturn10d != null && (
+                  <div style={{ fontSize: 9, color: p.avgReturn10d >= 0 ? '#34d399' : '#f87171', marginTop: 2 }}>
+                    平均 {p.avgReturn10d >= 0 ? '+' : ''}{p.avgReturn10d}%
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 10, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
+            時代別に打率が大きく違うなら「時代特有のロジック」が混じっている可能性。同じ条件で安定して当たればロバスト。
+          </div>
+        </div>
+      )}
 
       {/* 実行パネル */}
       <div style={{ background: '#1a1d27', borderRadius: 12, padding: 14, marginBottom: 16 }}>
@@ -214,8 +309,10 @@ export default function BacktestPage() {
                     <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.name}
                     </div>
-                    <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-                      {r.started_at.slice(0, 16).replace('T', ' ')} · {r.prompt_version}
+                    <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span>{r.started_at.slice(0, 16).replace('T', ' ')}</span>
+                      {r.trigger === 'cron' && <span style={{ background: '#1c2a1f', color: '#34d399', padding: '1px 5px', borderRadius: 3, fontSize: 9 }}>🤖 auto</span>}
+                      {r.period_label && <span style={{ background: '#1c1a2a', color: '#a78bfa', padding: '1px 5px', borderRadius: 3, fontSize: 9 }}>{r.period_label}</span>}
                     </div>
                   </div>
                   {r.status === 'running' && <span style={{ fontSize: 11, color: '#fbbf24' }}>実行中...</span>}
