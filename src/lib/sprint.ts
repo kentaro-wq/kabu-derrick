@@ -159,6 +159,8 @@ export async function runSprintTick(
             conditions_met: judgment.conditions_met,
             reasoning: judgment.reasoning,
             risk_factors: judgment.risk_factors,
+            narrative: judgment.narrative ?? null,         // v3
+            crowd_position: judgment.crowd_position ?? null, // v3
             price_at_signal: c.priceAtSignal,
             ma5: ind.ma5, ma25: ind.ma25, ma75: ind.ma75,
             volume_ratio: ind.volumeRatio,
