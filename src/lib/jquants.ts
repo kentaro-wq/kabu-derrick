@@ -139,16 +139,21 @@ export async function fetchOHLCVHistory(
   const toStr = to.toISOString().slice(0, 10)
 
   try {
-    const res = await fetch(
-      `https://api.jquants.com/v1/prices/daily_quotes?code=${code}&from=${fromStr}&to=${toStr}`,
-      {
-        headers: authHeaders(idToken),
-        signal: AbortSignal.timeout(10000),
-      }
-    )
-    if (!res.ok) return []
+    const url = `https://api.jquants.com/v1/prices/daily_quotes?code=${code}&from=${fromStr}&to=${toStr}`
+    const res = await fetch(url, {
+      headers: authHeaders(idToken),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.error(`[jquants] daily_quotes ${code} HTTP ${res.status}: ${text.slice(0, 200)}`)
+      return []
+    }
     const data = await res.json()
     const quotes: DailyQuote[] = data.daily_quotes ?? []
+    if (quotes.length === 0) {
+      console.error(`[jquants] daily_quotes ${code} empty response. keys: ${Object.keys(data).join(',')} body: ${JSON.stringify(data).slice(0, 200)}`)
+    }
     return quotes
       .filter(q => q.Close != null && q.Volume != null)
       .slice(-days)
