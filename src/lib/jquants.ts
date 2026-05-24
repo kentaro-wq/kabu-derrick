@@ -25,23 +25,29 @@ function authHeaders(apiKey: string): Record<string, string> {
   return { 'X-API-Key': apiKey }
 }
 
-interface DailyQuote {
+// V2 daily bars response format: { data: [{ Date, Code, O, H, L, C, Vo, Va, AdjO, AdjH, AdjL, AdjC, AdjVo, ... }] }
+interface DailyBarV2 {
   Date: string
   Code: string
-  Open: number
-  High: number
-  Low: number
-  Close: number
-  Volume: number
-  TurnoverValue: number
+  O: number   // Open
+  H: number   // High
+  L: number   // Low
+  C: number   // Close
+  Vo: number  // Volume
+  Va?: number // Turnover Value
+  AdjO?: number
+  AdjH?: number
+  AdjL?: number
+  AdjC?: number
+  AdjVo?: number
 }
 
-// 指定銘柄の最新日次株価を取得
+// 指定銘柄の最新日次株価を取得（V2 API）
 async function fetchLatestPrice(ticker: string, apiKey: string): Promise<{ price: number; date: string } | null> {
   try {
     const code = toJQuantsCode(ticker)
     const res = await fetch(
-      `https://api.jquants.com/v1/prices/daily_quotes?code=${code}`,
+      `https://api.jquants.com/v2/equities/bars/daily?code=${code}`,
       {
         headers: authHeaders(apiKey),
         signal: AbortSignal.timeout(10000),
@@ -49,11 +55,10 @@ async function fetchLatestPrice(ticker: string, apiKey: string): Promise<{ price
     )
     if (!res.ok) return null
     const data = await res.json()
-    const quotes: DailyQuote[] = data.daily_quotes ?? []
-    if (quotes.length === 0) return null
-    // 最新日（末尾）の終値
-    const latest = quotes[quotes.length - 1]
-    return { price: latest.Close, date: latest.Date }
+    const bars: DailyBarV2[] = data.data ?? []
+    if (bars.length === 0) return null
+    const latest = bars[bars.length - 1]
+    return { price: latest.C, date: latest.Date }
   } catch {
     return null
   }
@@ -139,33 +144,35 @@ export async function fetchOHLCVHistory(
   const toStr = to.toISOString().slice(0, 10)
 
   try {
-    const url = `https://api.jquants.com/v1/prices/daily_quotes?code=${code}&from=${fromStr}&to=${toStr}`
+    // V2 API: /v2/equities/bars/daily
+    const url = `https://api.jquants.com/v2/equities/bars/daily?code=${code}&from=${fromStr}&to=${toStr}`
     const res = await fetch(url, {
       headers: authHeaders(idToken),
       signal: AbortSignal.timeout(10000),
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
-      console.error(`[jquants] daily_quotes ${code} HTTP ${res.status}: ${text.slice(0, 200)}`)
+      console.error(`[jquants] v2 bars ${code} HTTP ${res.status}: ${text.slice(0, 200)}`)
       return []
     }
     const data = await res.json()
-    const quotes: DailyQuote[] = data.daily_quotes ?? []
-    if (quotes.length === 0) {
-      console.error(`[jquants] daily_quotes ${code} empty response. keys: ${Object.keys(data).join(',')} body: ${JSON.stringify(data).slice(0, 200)}`)
+    const bars: DailyBarV2[] = data.data ?? []
+    if (bars.length === 0) {
+      console.error(`[jquants] v2 bars ${code} empty. keys: ${Object.keys(data).join(',')}`)
     }
-    return quotes
-      .filter(q => q.Close != null && q.Volume != null)
+    return bars
+      .filter(b => b.C != null && b.Vo != null)
       .slice(-days)
-      .map(q => ({
-        date: q.Date,
-        open: q.Open,
-        high: q.High,
-        low: q.Low,
-        close: q.Close,
-        volume: q.Volume,
+      .map(b => ({
+        date: b.Date,
+        open: b.O,
+        high: b.H,
+        low: b.L,
+        close: b.C,
+        volume: b.Vo,
       }))
-  } catch {
+  } catch (e) {
+    console.error(`[jquants] v2 bars ${code} exception:`, e)
     return []
   }
 }
