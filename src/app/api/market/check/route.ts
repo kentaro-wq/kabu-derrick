@@ -3,7 +3,10 @@ import { sendLineMessage } from '@/lib/line'
 
 interface YahooChartMeta {
   regularMarketPrice: number
-  previousClose: number
+  // Yahoo Finance API は `previousClose` を常に null で返す（仕様変更済み）
+  // 代わりに `chartPreviousClose` を使う必要がある。range=2d で前営業日終値を取得。
+  previousClose: number | null
+  chartPreviousClose: number | null
   shortName?: string
 }
 
@@ -18,18 +21,20 @@ type CrashLevel = 'none' | 'caution' | 'drop' | 'crash'
 
 async function fetchIndex(symbol: string): Promise<{ price: number; prevClose: number; changePct: number } | null> {
   try {
+    // range=2d: chartPreviousClose が前営業日の終値になる（range=1dだと当日のopenになる）
     const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
     )
     if (!res.ok) return null
     const data: YahooChartResult = await res.json()
     const meta = data.chart?.result?.[0]?.meta
     if (!meta) return null
-    const changePct = meta.previousClose > 0
-      ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100
-      : 0
-    return { price: meta.regularMarketPrice, prevClose: meta.previousClose, changePct }
+    // previousClose は廃止済みのため chartPreviousClose を優先採用
+    const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? 0
+    if (!prevClose || prevClose <= 0 || !meta.regularMarketPrice) return null
+    const changePct = ((meta.regularMarketPrice - prevClose) / prevClose) * 100
+    return { price: meta.regularMarketPrice, prevClose, changePct }
   } catch {
     return null
   }
@@ -128,12 +133,29 @@ async function runIntraday() {
 // === overnight mode: 米市場引け後・日本寄り付き前のギャップ予測 ===
 // 目的: 非取引時間に起きた変化を可視化し、寄り付き直後のパニック売買を防ぐ。
 //       特に月曜朝は土日2日分の米市場変動が反映されるため、ここで一度状況確認を入れる。
+// 日経225先物の取得: 複数シンボルでフォールバック
+// Yahoo Finance のシンボルは時期により変動・廃止があるため冗長化
+// 候補: NIY=F (JPY建てCME), NKD=F (USD建てCME), ^N225 (現物指数=休場時はnull)
+async function fetchNikkeiFuture(): Promise<{ price: number; prevClose: number; changePct: number; source: string } | null> {
+  const candidates: Array<{ symbol: string; label: string }> = [
+    { symbol: 'NIY=F', label: 'CME日経225(JPY)' },
+    { symbol: 'NKD=F', label: 'CME日経225(USD)' },
+  ]
+  for (const c of candidates) {
+    const data = await fetchIndex(c.symbol)
+    if (data && data.price > 0 && data.prevClose > 0) {
+      return { ...data, source: c.label }
+    }
+  }
+  return null
+}
+
 async function runOvernight() {
   const [sp500, nasdaq, dow, n225fut] = await Promise.all([
     fetchIndex('^GSPC'),  // S&P500
     fetchIndex('^IXIC'),  // NASDAQ
     fetchIndex('^DJI'),   // ダウ
-    fetchIndex('NIY=F'),  // CME日経225先物（最も寄り付きの方向感を示す）
+    fetchNikkeiFuture(),  // CME日経225先物（複数シンボルフォールバック）
   ])
 
   // 寄り付きギャップの予測は「日経先物」を最重要視
@@ -158,7 +180,9 @@ async function runOvernight() {
     formatIndex('NASDAQ', nasdaq),
     formatIndex('ダウ', dow),
   ].filter(Boolean).join(' / ')
-  const futLine = formatIndex('日経225先物', n225fut, '円')
+  const futLine = n225fut
+    ? formatIndex(`日経225先物(${n225fut.source})`, n225fut, '円')
+    : null
 
   // 月曜朝判定（JST基準: getDay()はサーバーUTCだが、JST 7:00 = UTC 22:00 前日 のため曜日ズレあり）
   // ここでは「直近3日の変動」として全曜日で意味のある通知にする
