@@ -9,6 +9,10 @@
       "schedule": "30 23 * * 0-4"
     },
     {
+      "path": "/api/market/check?mode=overnight",
+      "schedule": "0 22 * * 0-4"
+    },
+    {
       "path": "/api/notify?type=evening",
       "schedule": "45 6 * * 1-5"
     },

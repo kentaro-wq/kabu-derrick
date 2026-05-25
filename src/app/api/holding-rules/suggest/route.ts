@@ -40,9 +40,26 @@ export async function POST(req: Request) {
     return `【${s.title ?? '無題'}】\n${userMsgs}`
   }).join('\n\n---\n\n')
 
+  const NISA_TYPES = ['nisa_growth', 'nisa_tsumitate', 'old_tsumitate']
+  const isNisa = !!holding && NISA_TYPES.includes(holding.account_type)
+
   const holdingInfo = holding
-    ? `現在値: ${holding.current_price?.toLocaleString() ?? '不明'}円 / 取得単価: ${holding.purchase_price?.toLocaleString() ?? '不明'}円 / 含み損益: ${holding.unrealized_gain != null ? (holding.unrealized_gain >= 0 ? '+' : '') + holding.unrealized_gain.toLocaleString() + '円' : '不明'} (${holding.unrealized_gain_pct != null ? (holding.unrealized_gain_pct >= 0 ? '+' : '') + holding.unrealized_gain_pct.toFixed(2) + '%' : '不明'}) / 口座: ${holding.account_type}`
+    ? `現在値: ${holding.current_price?.toLocaleString() ?? '不明'}円 / 取得単価: ${holding.purchase_price?.toLocaleString() ?? '不明'}円 / 含み損益: ${holding.unrealized_gain != null ? (holding.unrealized_gain >= 0 ? '+' : '') + holding.unrealized_gain.toLocaleString() + '円' : '不明'} (${holding.unrealized_gain_pct != null ? (holding.unrealized_gain_pct >= 0 ? '+' : '') + holding.unrealized_gain_pct.toFixed(2) + '%' : '不明'}) / 口座: ${holding.account_type}${isNisa ? '（NISA: 売却で枠は翌年まで復活しない）' : ''}`
     : '（保有データなし）'
+
+  const nisaRemaining = ((profile?.nisa_growth_limit ?? 0) - (profile?.nisa_growth_used ?? 0))
+  const accountGuidance = isNisa
+    ? `【NISA口座向けルール設計の原則（税制最適化込み）】
+- 損切りラインはやや甘めに（-20〜-25%目安）。NISA損切りは三重損: ①損失確定 ②非課税枠の翌年までの喪失 ③特定口座の利益との損益通算・3年繰越控除も不可。
+- 利確ラインは原則設定しない、または非常に高め（+50%以上）。譲渡益・配当ともに非課税の恩恵を最大化するには長期保有が合理的。
+- 配当狙い銘柄ならNISA口座は最適。配当の20.315%課税回避効果が毎年累積する。
+- 「長期保有銘柄か」「配当狙いか」を明示し、短期売買的ルールは入れない。
+- カスタムルールに「NISA枠コスト考慮: 売却時は今年の枠が${(nisaRemaining / 10000).toFixed(0)}万円減ることを意識」等の注意を含める。`
+    : `【特定口座向けルール設計の原則（税制最適化込み）】
+- 損切りラインは-15〜-20%目安で機械的に設定可能。損失は同年の他確定益と損益通算可・翌3年に繰越控除も可能。
+- 利確ラインも設定可。譲渡益は20.315%課税。
+- 高配当銘柄（年利回り3%超）なら、可能ならNISA枠で買い直しを検討。配当も20.315%課税のため、長期保有では税効果が大きい。NISA成長枠の残りは ${(nisaRemaining / 10000).toFixed(0)}万円。
+- 年末（11月以降）に含み損になっていれば、損出しによる節税余地あり。custom_rulesに「年末損出し候補（含み損が当年確定益と相殺可能なら検討）」を入れることを推奨。`
 
   const profileInfo = profile
     ? `目標: ${(profile.target_amount / 10000).toFixed(0)}万円 / NISA成長枠 残り: ${((profile.nisa_growth_limit - profile.nisa_growth_used) / 10000).toFixed(0)}万円`
@@ -63,6 +80,8 @@ ${holdingInfo}
 ${policy}
 
 ${profileInfo ? `【プロフィール】\n${profileInfo}\n` : ''}
+${accountGuidance}
+
 【過去の関連相談（ユーザー発言）】
 ${chatContext}
 

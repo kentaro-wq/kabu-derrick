@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { sendLineMessage } from '@/lib/line'
 
 interface YahooChartMeta {
@@ -42,8 +42,27 @@ function classifyLevel(changePct: number): CrashLevel {
   return 'none'
 }
 
-// 市場インデックスの急落チェックと暴落時パニック防止通知
-export async function POST() {
+// 寄り付き前ギャップ予測用: 先物 or 米株の絶対値変動を「ギャップ警戒」に分類
+// 上方ギャップも下方ギャップも、寄り付き直後の値動きが荒れるため事前通知の価値がある
+type GapLevel = 'none' | 'watch' | 'large'
+function classifyGap(changePct: number): GapLevel {
+  const abs = Math.abs(changePct)
+  if (abs >= 3) return 'large'
+  if (abs >= 1.5) return 'watch'
+  return 'none'
+}
+
+function formatIndex(label: string, data: { price: number; changePct: number } | null, unit = ''): string | null {
+  if (!data) return null
+  const sign = data.changePct >= 0 ? '+' : ''
+  const price = unit === '円'
+    ? data.price.toLocaleString()
+    : data.price.toFixed(2)
+  return `${label}: ${price}${unit} (${sign}${data.changePct.toFixed(2)}%)`
+}
+
+// === intraday mode: 取引時間中・引け後の急落検知 ===
+async function runIntraday() {
   const [nikkei, topix] = await Promise.all([
     fetchIndex('^N225'),
     fetchIndex('^TOPX'),
@@ -52,22 +71,20 @@ export async function POST() {
   const nikkeiLevel = nikkei ? classifyLevel(nikkei.changePct) : 'none'
   const topixLevel = topix ? classifyLevel(topix.changePct) : 'none'
 
-  // 2指標のうち悪い方を採用
   const levelOrder: CrashLevel[] = ['none', 'caution', 'drop', 'crash']
   const worstLevel = levelOrder[Math.max(levelOrder.indexOf(nikkeiLevel), levelOrder.indexOf(topixLevel))]
 
   const today = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
 
   const indexLine = [
-    nikkei ? `日経225: ${nikkei.price.toLocaleString()}円 (${nikkei.changePct >= 0 ? '+' : ''}${nikkei.changePct.toFixed(2)}%)` : null,
-    topix ? `TOPIX: ${topix.price.toFixed(2)} (${topix.changePct >= 0 ? '+' : ''}${topix.changePct.toFixed(2)}%)` : null,
+    formatIndex('日経225', nikkei, '円'),
+    formatIndex('TOPIX', topix),
   ].filter(Boolean).join(' / ')
 
   if (worstLevel === 'none') {
-    return NextResponse.json({ level: 'none', indexLine, notified: false })
+    return NextResponse.json({ mode: 'intraday', level: 'none', indexLine, notified: false })
   }
 
-  // 暴落レベルに応じたメッセージ
   const levelConfig: Record<Exclude<CrashLevel, 'none'>, { icon: string; headline: string; guidance: string }> = {
     caution: {
       icon: '⚠️',
@@ -93,16 +110,119 @@ export async function POST() {
   }
 
   const cfg = levelConfig[worstLevel as Exclude<CrashLevel, 'none'>]
-  if (!cfg) return NextResponse.json({ level: worstLevel, indexLine, notified: false })
+  if (!cfg) return NextResponse.json({ mode: 'intraday', level: worstLevel, indexLine, notified: false })
   const lineMsg = `${cfg.icon} マイ株デリック 市場${cfg.headline}\n${today}\n\n${indexLine}\n\n${cfg.guidance}`
 
   await sendLineMessage(lineMsg)
 
   return NextResponse.json({
+    mode: 'intraday',
     level: worstLevel,
     indexLine,
     nikkei,
     topix,
     notified: true,
   })
+}
+
+// === overnight mode: 米市場引け後・日本寄り付き前のギャップ予測 ===
+// 目的: 非取引時間に起きた変化を可視化し、寄り付き直後のパニック売買を防ぐ。
+//       特に月曜朝は土日2日分の米市場変動が反映されるため、ここで一度状況確認を入れる。
+async function runOvernight() {
+  const [sp500, nasdaq, dow, n225fut] = await Promise.all([
+    fetchIndex('^GSPC'),  // S&P500
+    fetchIndex('^IXIC'),  // NASDAQ
+    fetchIndex('^DJI'),   // ダウ
+    fetchIndex('NIY=F'),  // CME日経225先物（最も寄り付きの方向感を示す）
+  ])
+
+  // 寄り付きギャップの予測は「日経先物」を最重要視
+  // 米株は背景情報として表示するが、判定は先物の動きで行う
+  const futGapLevel = n225fut ? classifyGap(n225fut.changePct) : 'none'
+  const usAvgChange = [sp500, nasdaq, dow]
+    .map(x => x?.changePct)
+    .filter((x): x is number => typeof x === 'number')
+  const usAvg = usAvgChange.length > 0
+    ? usAvgChange.reduce((a, b) => a + b, 0) / usAvgChange.length
+    : 0
+  const usGapLevel = classifyGap(usAvg)
+
+  // 先物 or 米平均のどちらかが警戒以上なら通知
+  const gapOrder: GapLevel[] = ['none', 'watch', 'large']
+  const worstGap = gapOrder[Math.max(gapOrder.indexOf(futGapLevel), gapOrder.indexOf(usGapLevel))]
+
+  const today = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
+
+  const usLine = [
+    formatIndex('S&P500', sp500),
+    formatIndex('NASDAQ', nasdaq),
+    formatIndex('ダウ', dow),
+  ].filter(Boolean).join(' / ')
+  const futLine = formatIndex('日経225先物', n225fut, '円')
+
+  // 月曜朝判定（JST基準: getDay()はサーバーUTCだが、JST 7:00 = UTC 22:00 前日 のため曜日ズレあり）
+  // ここでは「直近3日の変動」として全曜日で意味のある通知にする
+  const now = new Date()
+  const jstHour = (now.getUTCHours() + 9) % 24
+  const jstDay = (now.getUTCDay() + (now.getUTCHours() + 9 >= 24 ? 1 : 0)) % 7
+  const isMondayMorning = jstDay === 1 && jstHour < 12
+
+  if (worstGap === 'none') {
+    return NextResponse.json({
+      mode: 'overnight',
+      gap: 'none',
+      usLine,
+      futLine,
+      notified: false,
+    })
+  }
+
+  const direction = (n225fut?.changePct ?? usAvg) >= 0 ? '上方' : '下方'
+  const icon = worstGap === 'large' ? '🚨' : '⚠️'
+  const headline = `寄り付き${direction}ギャップ警戒`
+
+  const guidance = [
+    `${isMondayMorning ? '週明け月曜の寄り付き前です。土日明けで価格が大きく動く可能性があります。\n' : ''}寄り付き直後は値動きが荒くなります。`,
+    direction === '下方'
+      ? '・成行売り注文を入れている場合は、開始10〜15分は様子見が無難'
+      : '・上昇に飛びついての高値掴みに注意。買いは押し目を待つ',
+    '・損切り・利確ルールは「寄り付きの瞬間値」ではなく前日終値・始値で評価する方が安全',
+    '・NISA枠の売却は枠の翌年復活なし。ギャップだけで判断しない',
+  ].join('\n')
+
+  const lineMsg = [
+    `${icon} マイ株デリック ${headline}`,
+    today,
+    '',
+    `【先物・米市場】`,
+    futLine ?? '日経先物: 取得失敗',
+    usLine || '米市場: 取得失敗',
+    '',
+    guidance,
+  ].join('\n')
+
+  await sendLineMessage(lineMsg)
+
+  return NextResponse.json({
+    mode: 'overnight',
+    gap: worstGap,
+    direction,
+    sp500, nasdaq, dow, n225fut,
+    isMondayMorning,
+    notified: true,
+  })
+}
+
+// 市場インデックスの急落チェック
+// - 既定: intraday（日本市場の取引時間中・引け後）
+// - ?mode=overnight: 米市場引け後・寄り付き前のギャップ予測
+export async function POST(req: NextRequest) {
+  const mode = req.nextUrl.searchParams.get('mode') === 'overnight' ? 'overnight' : 'intraday'
+  if (mode === 'overnight') return runOvernight()
+  return runIntraday()
+}
+
+// Vercel cron は GET でも叩けるように
+export async function GET(req: NextRequest) {
+  return POST(req)
 }
