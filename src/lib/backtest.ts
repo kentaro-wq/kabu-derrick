@@ -8,6 +8,7 @@
  */
 import { calcIndicators, summarizeIndicators, type OHLCVBar } from '@/lib/technicals'
 import { adminSupabase } from '@/lib/supabase'
+import { getLatestLessons, formatLessonsForPrompt, type ReflectionLesson } from '@/lib/reflection'
 import Anthropic from '@anthropic-ai/sdk'
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -128,14 +129,16 @@ export async function judgeWithClaude(
   indicatorSummary: string,
   fundamentalSummary: string,
   fewShot?: FewShotBundle,
+  lessons?: ReflectionLesson[],   // v4: 自己反省から得た教訓
 ): Promise<SignalJudgment> {
   const fewShotBlock = fewShot ? formatFewShotBlock(fewShot) : ''
+  const lessonsBlock = lessons && lessons.length > 0 ? '\n' + formatLessonsForPrompt(lessons) + '\n' : ''
   const prompt = `あなたは群衆心理を読む日本株トレーダーです。
 
 【本質】株価は事実ではなく「投資家がどう思うか」で動きます。
 チャートパターンが当たるのは「みんなが信じているから」、ファンダメンタルが効くのは「みんなが評価するから」です。
 あなたの仕事は次の上昇（+15%以上、10〜20営業日内）が起きそうな「**群衆心理の転換点**」を見抜くことです。
-${fewShotBlock ? '\n' + fewShotBlock + '\n' : ''}
+${lessonsBlock}${fewShotBlock ? '\n' + fewShotBlock + '\n' : ''}
 銘柄: ${name}（${ticker}）
 
 【テクニカル指標】
@@ -207,7 +210,7 @@ ${fundamentalSummary}
 }
 
 /** 現プロンプト版のハッシュ（変更を追跡）— 簡易的にプロンプト先頭を返す */
-export const PROMPT_VERSION = '2026-05-v3-narrative'
+export const PROMPT_VERSION = '2026-05-v4-reflection'
 
 export interface BacktestCandidate {
   ticker: string
@@ -329,6 +332,7 @@ export function getCommonTradingDates(
 export async function evaluateCandidate(
   c: BacktestCandidate,
   fewShot?: FewShotBundle,
+  lessons?: ReflectionLesson[],
 ): Promise<{
   judgment: SignalJudgment
   indicators: ReturnType<typeof calcIndicators>
@@ -347,7 +351,7 @@ export async function evaluateCandidate(
   const judgment = await judgeWithClaude(
     c.ticker, c.name, c.priceAtSignal,
     indicatorSummary, fundamentalSummary,
-    fewShot,
+    fewShot, lessons,
   )
 
   // 結果計算（futureBars から取得）

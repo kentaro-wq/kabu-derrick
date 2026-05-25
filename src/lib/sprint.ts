@@ -17,6 +17,7 @@ import {
   PROMPT_VERSION,
   fetchFewShotExamples,
 } from '@/lib/backtest'
+import { getLatestLessons } from '@/lib/reflection'
 import type { OHLCVBar } from '@/lib/technicals'
 
 // 1評価あたりの想定コスト（円）— Claude Haiku 4.5 で約 ¥0.4
@@ -89,6 +90,12 @@ export async function runSprintTick(
     console.log(`[sprint] few-shot: ${fewShot.hits.length} hits, ${fewShot.misses.length} misses`)
   }
 
+  // 自己反省からの教訓を取得（最新セット、常時適用）
+  const lessons = await getLatestLessons()
+  if (lessons.length > 0) {
+    console.log(`[sprint] lessons applied: ${lessons.length} principles`)
+  }
+
   // 予算に達するか maxRunsPerTick に達するまでミニ・バックテストを繰り返す
   let runsCompleted = 0
   let costAccumulated = sprint.total_cost_yen
@@ -142,7 +149,7 @@ export async function runSprintTick(
       const CONCURRENT = 5
       for (let i = 0; i < candidates.length; i += CONCURRENT) {
         const chunk = candidates.slice(i, i + CONCURRENT)
-        const evaluations = await Promise.all(chunk.map(c => evaluateCandidate(c, fewShot)))
+        const evaluations = await Promise.all(chunk.map(c => evaluateCandidate(c, fewShot, lessons.length > 0 ? lessons : undefined)))
 
         for (let j = 0; j < chunk.length; j++) {
           const c = chunk[j]
