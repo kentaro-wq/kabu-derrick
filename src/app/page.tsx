@@ -80,6 +80,8 @@ export default function Dashboard() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
+  const [exitJudgments, setExitJudgments] = useState<Record<string, { decision: string; confidence: number; reasoning: string; judgment_date: string }>>({})
+  const [judging, setJudging] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -89,16 +91,43 @@ export default function Dashboard() {
       fetch('/api/tsumitate').then(r => r.json()).catch(() => ({ settings: [] })),
       fetch('/api/snapshots').then(r => r.json()).catch(() => ({ snapshots: [] })),
       fetch('/api/alerts').then(r => r.json()).catch(() => ({ alerts: [] })),
-    ]).then(([h, o, p, t, s, al]) => {
+      fetch('/api/exit-judgment').then(r => r.json()).catch(() => ({ judgments: [] })),
+    ]).then(([h, o, p, t, s, al, ej]) => {
       setHoldings(Array.isArray(h) ? h : [])
       setOrders(Array.isArray(o) ? o : [])
       setProfile(p?.id ? p : null)
       setTsumitate(Array.isArray(t?.settings) ? t.settings : [])
       setSnapshots(Array.isArray(s?.snapshots) ? s.snapshots : [])
       setAlerts(Array.isArray(al?.alerts) ? al.alerts : [])
+      // ticker毎に最新の判定をマップ化
+      const map: Record<string, { decision: string; confidence: number; reasoning: string; judgment_date: string }> = {}
+      for (const j of (ej?.judgments ?? [])) {
+        if (!map[j.ticker]) map[j.ticker] = { decision: j.decision, confidence: j.confidence, reasoning: j.reasoning, judgment_date: j.judgment_date }
+      }
+      setExitJudgments(map)
       setLoading(false)
     })
   }, [])
+
+  async function runExitJudgment() {
+    setJudging(true)
+    try {
+      const res = await fetch('/api/exit-judgment', { method: 'POST' })
+      const d = await res.json()
+      // 再取得して反映
+      const r2 = await fetch('/api/exit-judgment').then(r => r.json())
+      const map: Record<string, { decision: string; confidence: number; reasoning: string; judgment_date: string }> = {}
+      for (const j of (r2?.judgments ?? [])) {
+        if (!map[j.ticker]) map[j.ticker] = { decision: j.decision, confidence: j.confidence, reasoning: j.reasoning, judgment_date: j.judgment_date }
+      }
+      setExitJudgments(map)
+      alert(`出口判断: ${d.count}件評価しました`)
+    } catch (e) {
+      alert(`エラー: ${String(e)}`)
+    } finally {
+      setJudging(false)
+    }
+  }
 
   const totalInvested = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
   const totalGain = holdings.reduce((s, h) => s + (h.unrealized_gain ?? 0), 0)
@@ -315,9 +344,20 @@ export default function Dashboard() {
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)' }}>保有銘柄</div>
-          <a href="/portfolio/update" style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none', padding: '4px 10px', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 99 }}>
-            📷 更新
-          </a>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={runExitJudgment}
+              disabled={judging}
+              style={{
+                fontSize: 11, color: judging ? '#6b7280' : '#fbbf24',
+                background: 'transparent', cursor: judging ? 'not-allowed' : 'pointer',
+                padding: '4px 10px', border: '1px solid rgba(251,191,36,0.4)', borderRadius: 99,
+              }}
+            >🎯 {judging ? '判定中...' : 'AI出口判定'}</button>
+            <a href="/portfolio/update" style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none', padding: '4px 10px', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 99 }}>
+              📷 更新
+            </a>
+          </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {holdings.map(h => (
@@ -352,6 +392,27 @@ export default function Dashboard() {
                   )}
                 </div>
               </div>
+              {/* AI出口判定バッジ */}
+              {exitJudgments[h.ticker] && (() => {
+                const ej = exitJudgments[h.ticker]
+                const cfg = ej.decision === 'take_profit'
+                  ? { bg: '#1c3a1f', color: '#34d399', icon: '💰', label: '利確推奨' }
+                  : ej.decision === 'cut_loss'
+                    ? { bg: '#3a1c1c', color: '#f87171', icon: '✂️', label: '損切推奨' }
+                    : { bg: '#1a2333', color: '#60a5fa', icon: '✓', label: '継続' }
+                return (
+                  <div style={{
+                    marginTop: 8, padding: '6px 8px',
+                    background: cfg.bg, borderRadius: 6, fontSize: 11,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: cfg.color, fontWeight: 600 }}>{cfg.icon} {cfg.label}</span>
+                      <span style={{ color: '#6b7280', fontSize: 9 }}>AI判定 {ej.judgment_date.slice(5)}</span>
+                    </div>
+                    <div style={{ color: '#9ca3af', fontSize: 10, marginTop: 3, lineHeight: 1.4 }}>{ej.reasoning}</div>
+                  </div>
+                )
+              })()}
             </div>
           ))}
         </div>
