@@ -103,7 +103,19 @@ export async function POST() {
   const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   const { data: holdingsRaw } = await adminSupabase.from('holdings').select('*')
-  const holdings = (holdingsRaw ?? []).filter((h: Holding) => /^\d{4}$/.test(h.ticker)) as Holding[]
+
+  // 出口判定の対象は「自由に売買できる口座」のみ
+  // - nisa_growth: 売買自由、利確の税優遇あり
+  // - tokutei: 通常の課税口座、自由
+  // 除外対象:
+  // - mochikabu: 持株会、移管手続き必要で即売却不可、奨励金制度あり
+  // - dc: DC・iDeCo、引出制限あり
+  // - nisa_tsumitate / old_tsumitate: 長期保有前提
+  const tradableAccounts = new Set(['nisa_growth', 'tokutei'])
+  const holdings = (holdingsRaw ?? []).filter((h: Holding) =>
+    /^\d{4}$/.test(h.ticker) && tradableAccounts.has(h.account_type)
+  ) as Holding[]
+
   if (holdings.length === 0) return NextResponse.json({ message: '対象保有銘柄なし', count: 0 })
 
   const idToken = await getIdToken()
