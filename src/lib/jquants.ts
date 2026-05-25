@@ -25,24 +25,26 @@ function authHeaders(apiKey: string): Record<string, string> {
   return { 'X-API-Key': apiKey }
 }
 
-// V2 daily bars response format: { data: [{ Date, Code, O, H, L, C, Vo, Va, AdjO, AdjH, AdjL, AdjC, AdjVo, ... }] }
+// V2 daily bars response format: { data: [{ Date, Code, O, H, L, C, Vo, Va, AdjO, AdjH, AdjL, AdjC, AdjVo, AdjFactor ... }] }
 interface DailyBarV2 {
   Date: string
   Code: string
-  O: number   // Open
-  H: number   // High
-  L: number   // Low
-  C: number   // Close
-  Vo: number  // Volume
+  O: number   // Open (生値)
+  H: number   // High (生値)
+  L: number   // Low (生値)
+  C: number   // Close (生値)
+  Vo: number  // Volume (生値)
   Va?: number // Turnover Value
-  AdjO?: number
-  AdjH?: number
-  AdjL?: number
-  AdjC?: number
-  AdjVo?: number
+  AdjO?: number   // 調整済み Open
+  AdjH?: number   // 調整済み High
+  AdjL?: number   // 調整済み Low
+  AdjC?: number   // 調整済み Close ← 株式分割考慮
+  AdjVo?: number  // 調整済み Volume
+  AdjFactor?: number
 }
 
 // 指定銘柄の最新日次株価を取得（V2 API）
+// AdjC (株式分割考慮済み終値) を使う。これでないと分割銘柄の価格が時系列で一貫しない
 async function fetchLatestPrice(ticker: string, apiKey: string): Promise<{ price: number; date: string } | null> {
   try {
     const code = toJQuantsCode(ticker)
@@ -58,7 +60,7 @@ async function fetchLatestPrice(ticker: string, apiKey: string): Promise<{ price
     const bars: DailyBarV2[] = data.data ?? []
     if (bars.length === 0) return null
     const latest = bars[bars.length - 1]
-    return { price: latest.C, date: latest.Date }
+    return { price: latest.AdjC ?? latest.C, date: latest.Date }
   } catch {
     return null
   }
@@ -175,16 +177,17 @@ export async function fetchOHLCVHistory(
     if (allBars.length === 0) {
       console.error(`[jquants] v2 bars ${code} empty response`)
     }
+    // AdjC (調整済み Close) を優先。株式分割があった場合、時系列を一貫させるために必須
     return allBars
-      .filter(b => b.C != null && b.Vo != null)
+      .filter(b => (b.AdjC ?? b.C) != null && (b.AdjVo ?? b.Vo) != null)
       .slice(-days)
       .map(b => ({
         date: b.Date,
-        open: b.O,
-        high: b.H,
-        low: b.L,
-        close: b.C,
-        volume: b.Vo,
+        open: b.AdjO ?? b.O,
+        high: b.AdjH ?? b.H,
+        low: b.AdjL ?? b.L,
+        close: b.AdjC ?? b.C,
+        volume: b.AdjVo ?? b.Vo,
       }))
   } catch (e) {
     console.error(`[jquants] v2 bars ${code} exception:`, e)
