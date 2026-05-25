@@ -116,6 +116,10 @@ export function checkStrategyTrigger(
 
   switch (strategy) {
     case 'fixed_20d':
+      // 損切セーフティネット: -8% で発動
+      if (gainPct <= -8) {
+        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+      }
       if (daysHeld >= 20) {
         return { shouldExit: true, reason: `固定20日保有完了 (含み益${gainPct.toFixed(1)}%)`, triggerType: 'time_up' }
       }
@@ -134,6 +138,10 @@ export function checkStrategyTrigger(
       return { shouldExit: false, reason: `保有中 (${gainPct.toFixed(1)}%、-8%損切/+5%超でAI判定)` }
 
     case 'trailing_10':
+      // 損切セーフティネット: 取得-8% でも発動（買値より大きく下がってる時はトレンド転換扱い）
+      if (gainPct <= -8) {
+        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+      }
       const dropFromPeak = (current - peakSinceEntry) / peakSinceEntry * 100
       if (dropFromPeak <= -10) {
         return { shouldExit: true, reason: `高値${peakSinceEntry}から-10%下落`, triggerType: 'trailing_stop' }
@@ -141,6 +149,10 @@ export function checkStrategyTrigger(
       return { shouldExit: false, reason: `高値${peakSinceEntry}から${dropFromPeak.toFixed(1)}%` }
 
     case 'consecutive_down':
+      // 損切セーフティネット
+      if (gainPct <= -8) {
+        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+      }
       if (gainPct < 5) {
         return { shouldExit: false, reason: `+5%未達 (現${gainPct.toFixed(1)}%)、まだ売らない` }
       }
