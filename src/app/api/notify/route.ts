@@ -125,6 +125,16 @@ async function handler(req: Request) {
   const url = new URL(req.url)
   const type = url.searchParams.get('type') ?? 'evening'
 
+  // 朝通知 (8:30 JST) 時に AI出口判定も自動実行（取引開始前にギャップ対応）
+  // fire-and-forget（待たない、別途LINE通知される）
+  if (type === 'morning') {
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
+    fetch(`${baseUrl}/api/exit-judgment`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+    }).catch(e => console.error('[notify/morning] exit-judgment trigger failed:', e))
+  }
+
   const message = type === 'morning' ? await morningCheck() : await eveningCheck()
 
   if (!message) {

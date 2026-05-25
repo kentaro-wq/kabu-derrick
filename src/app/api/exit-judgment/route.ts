@@ -89,8 +89,9 @@ async function askAIForConfirmation(
     indicators.consecutiveUp >= 2 ? `連続陽線: ${indicators.consecutiveUp}日` : '',
   ].filter(Boolean).join(', ')
 
-  // adaptive AI exit の含み益判定（最重要シーン）
+  // adaptive AI exit の含み益判定 vs 第一防衛線損切判定 を区別
   const isProfitJudgment = triggerType === 'pattern' && gainPct >= 5
+  const isLossDecisionPoint = triggerType === 'pattern' && gainPct <= -8
 
   // NISA成長枠の特殊制約セクション
   const nisaBlock = nisa.isNisa
@@ -103,7 +104,54 @@ async function askAIForConfirmation(
 - 含み益確定 (キャピタルゲイン非課税) のメリットと、上記機会コストのトレードオフを考慮してください\n`
     : (h.account_type === 'tokutei' ? '\n【特定口座】売却益に約20%の税金。NISA制約はなし\n' : '')
 
-  const prompt = isProfitJudgment
+  // 第一防衛線損切判定の専用プロンプト
+  const lossPrompt = `あなたは含み損銘柄の「損切すべきか持続すべきか」を判断する冷静なトレーダーです。
+
+【保有】${h.name}(${h.ticker})
+取得 ${h.purchase_price}円 × ${h.quantity}株
+現在 ${current}円 → 含み損 ${gainPct.toFixed(1)}%
+保有 ${daysHeld}日
+
+【テクニカル】
+${techSummary}
+${nisaBlock}
+---
+
+判断の本質 (利益最大化視点):
+
+これは「機械的-8%損切」と「NISA枠を守って回復を待つ」のトレードオフです。
+
+**cut_loss すべき場面 (損切):**
+- 明確な下降トレンド（MA5・MA25が右下がり、デッドクロス済み）
+- ファンダメンタル悪材料（決算ミス、業界逆風）
+- サポートラインを割り込み下値目処なし
+- RSI 20未満で底打ち感もなくさらなる売りが続く
+- 一目の雲・主要MAを全て下抜けた
+
+**hold すべき場面 (持続):**
+- 一時的な調整（地合い悪、テクニカル過熱の解消）
+- 主要なサポートライン上で下げ止まり
+- 出来高は減少（売り圧力の枯渇）
+- RSI 30前後で売られすぎ反発の可能性
+- ${nisa.isNisa ? `NISA枠の機会コスト大 (残月${nisa.monthsLeftInYear})、回復確率と天秤` : '通常口座なので即損切も選択肢'}
+
+**判断哲学:**
+- 利益最大化のためには、安易な損切も塩漬けも両方避ける
+- 「明確な下降トレンド」or「サポート崩壊」が見えたら迷わず cut_loss
+- そうでなければ、特に NISA枠の場合は hold で回復を待つ
+- ${nisa.isNisa ? `NISA枠は希少資源。-15%の最終防衛線まで余裕${(gainPct + 15).toFixed(1)}%` : ''}
+- 判断に迷うなら、最終防衛線(-15%)まで余裕があるか、と問い直せ
+
+JSON のみ:
+{
+  "decision": "cut_loss" | "hold",
+  "confidence": 1-5,
+  "reasoning": "下降トレンドの強さとNISA機会コストを天秤にかけた判断 (2-3文)"
+}`
+
+  const prompt = isLossDecisionPoint
+    ? lossPrompt
+    : isProfitJudgment
     ? `あなたは「上がる銘柄を最後まで持ち続ける」哲学のトレーダーです。
 含み益が出ている保有銘柄について、今売るか持ち続けるかを判断してください。
 

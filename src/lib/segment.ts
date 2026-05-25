@@ -116,9 +116,13 @@ export function checkStrategyTrigger(
 
   switch (strategy) {
     case 'fixed_20d':
-      // 損切セーフティネット: -8% で発動
+      // 最終防衛線: -15% で機械強制
+      if (gainPct <= -15) {
+        return { shouldExit: true, reason: `🚨 -15%最終防衛線 (実${gainPct.toFixed(1)}%) 機械強制`, triggerType: 'cut_loss' }
+      }
+      // 第一防衛線: -8% で AI に深く問う（NISA文脈考慮）
       if (gainPct <= -8) {
-        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+        return { shouldExit: true, reason: `-8%損切第一線 (実${gainPct.toFixed(1)}%) AI判断`, triggerType: 'pattern' }
       }
       if (daysHeld >= 20) {
         return { shouldExit: true, reason: `固定20日保有完了 (含み益${gainPct.toFixed(1)}%)`, triggerType: 'time_up' }
@@ -126,21 +130,27 @@ export function checkStrategyTrigger(
       return { shouldExit: false, reason: `保有${daysHeld}/20日` }
 
     case 'adaptive_ai_exit':
-      // 損切り: -8% で機械的に発動（迷わない）
+      // 最終防衛線: -15% で機械強制
+      if (gainPct <= -15) {
+        return { shouldExit: true, reason: `🚨 -15%最終防衛線 (実${gainPct.toFixed(1)}%) 機械強制`, triggerType: 'cut_loss' }
+      }
+      // 第一防衛線: -8% で AI に NISA文脈含め深く問う
       if (gainPct <= -8) {
-        return { shouldExit: true, reason: `-8%損切ライン到達 (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+        return { shouldExit: true, reason: `-8%損切第一線 (実${gainPct.toFixed(1)}%) AI判断`, triggerType: 'pattern' }
       }
       // 利確: 含み益+5%超なら毎日AIに「伸ばす？確定？」を聞く
       if (gainPct >= 5) {
         return { shouldExit: true, reason: `+${gainPct.toFixed(1)}%含み益、AIで継続判定`, triggerType: 'pattern' }
       }
       // それ未満は保有継続
-      return { shouldExit: false, reason: `保有中 (${gainPct.toFixed(1)}%、-8%損切/+5%超でAI判定)` }
+      return { shouldExit: false, reason: `保有中 (${gainPct.toFixed(1)}%、-8%でAI判断/-15%強制/+5%超でAI判定)` }
 
     case 'trailing_10':
-      // 損切セーフティネット: 取得-8% でも発動（買値より大きく下がってる時はトレンド転換扱い）
+      if (gainPct <= -15) {
+        return { shouldExit: true, reason: `🚨 -15%最終防衛線 (実${gainPct.toFixed(1)}%) 機械強制`, triggerType: 'cut_loss' }
+      }
       if (gainPct <= -8) {
-        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+        return { shouldExit: true, reason: `-8%損切第一線 (実${gainPct.toFixed(1)}%) AI判断`, triggerType: 'pattern' }
       }
       const dropFromPeak = (current - peakSinceEntry) / peakSinceEntry * 100
       if (dropFromPeak <= -10) {
@@ -149,9 +159,11 @@ export function checkStrategyTrigger(
       return { shouldExit: false, reason: `高値${peakSinceEntry}から${dropFromPeak.toFixed(1)}%` }
 
     case 'consecutive_down':
-      // 損切セーフティネット
+      if (gainPct <= -15) {
+        return { shouldExit: true, reason: `🚨 -15%最終防衛線 (実${gainPct.toFixed(1)}%) 機械強制`, triggerType: 'cut_loss' }
+      }
       if (gainPct <= -8) {
-        return { shouldExit: true, reason: `取得から-8%損切ライン (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
+        return { shouldExit: true, reason: `-8%損切第一線 (実${gainPct.toFixed(1)}%) AI判断`, triggerType: 'pattern' }
       }
       if (gainPct < 5) {
         return { shouldExit: false, reason: `+5%未達 (現${gainPct.toFixed(1)}%)、まだ売らない` }
