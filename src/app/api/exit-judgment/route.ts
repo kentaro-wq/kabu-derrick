@@ -21,6 +21,7 @@ import {
   classifySegment, calcVolatility, checkStrategyTrigger,
   strategyLabel, type ExitStrategy,
 } from '@/lib/segment'
+import { calcIndicators } from '@/lib/technicals'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -45,34 +46,93 @@ interface AIOverride {
   reasoning: string
 }
 
-/** 機械的トリガーで売却シグナル出た時、AIに最終判断を確認 */
+/** AI 確認プロンプト
+ *  triggerType に応じてプロンプトを変える:
+ *   - 'cut_loss': 損切確認（簡素）
+ *   - 'pattern' (adaptive AI exit): 「伸ばすか確定か」を熟考
+ *   - その他: 標準
+ */
 async function askAIForConfirmation(
   h: Holding,
   segmentLabel: string,
   strategy: ExitStrategy,
   triggerReason: string,
+  triggerType: string | undefined,
   gainPct: number,
   daysHeld: number,
+  indicators: {
+    rsi14: number | null
+    volumeRatio: number | null
+    ma5: number | null
+    ma25: number | null
+    todayChangePct: number | null
+    consecutiveUp: number
+  },
 ): Promise<AIOverride> {
-  const prompt = `保有株の売却タイミング最終確認です。
+  const current = Number(h.current_price)
+  const techSummary = [
+    indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
+    indicators.volumeRatio != null ? `出来高比率: ${indicators.volumeRatio}倍` : '',
+    indicators.ma5 ? `MA5: ${indicators.ma5}円 (現値${current >= indicators.ma5 ? '上' : '下'})` : '',
+    indicators.ma25 ? `MA25: ${indicators.ma25}円 (現値${current >= indicators.ma25 ? '上' : '下'})` : '',
+    indicators.todayChangePct != null ? `当日: ${indicators.todayChangePct >= 0 ? '+' : ''}${indicators.todayChangePct}%` : '',
+    indicators.consecutiveUp >= 2 ? `連続陽線: ${indicators.consecutiveUp}日` : '',
+  ].filter(Boolean).join(', ')
 
-【保有】${h.name}(${h.ticker}) ${h.account_type}
+  // adaptive AI exit の含み益判定（最重要シーン）
+  const isProfitJudgment = triggerType === 'pattern' && gainPct >= 5
+
+  const prompt = isProfitJudgment
+    ? `あなたは「上がる銘柄を最後まで持ち続ける」哲学のトレーダーです。
+含み益が出ている保有銘柄について、今売るか持ち続けるかを判断してください。
+
+【保有】${h.name}(${h.ticker})
 取得 ${h.purchase_price}円 × ${h.quantity}株
-現在 ${h.current_price}円 (含み益 ${gainPct.toFixed(1)}%)
+現在 ${current}円 → 含み益 ${gainPct.toFixed(1)}%
 保有 ${daysHeld}日
+
+【テクニカル】
+${techSummary}
+
+---
+判断指針:
+
+**hold（持ち続ける）にすべき場面:**
+- 上昇モメンタム継続中（MA5・MA25 上向き、終値もそれら以上）
+- 連続陽線、出来高伴う上昇
+- RSI 70未満で過熱ではない
+- トレンドがまだ生きている
+
+**take_profit（利確する）にすべき場面:**
+- 上昇モメンタムが死んだ兆候（MA5 下抜け、連続陰線）
+- RSI 75以上の極度の過熱
+- 出来高ピーク疑い + 当日陰線
+- 数日間横ばい・反落、エネルギー切れ
+
+哲学:
+- 含み益が大きいほど、「もっと伸ばす」を優先する
+- でも、明らかに勢いが死んだら即確定
+- 中途半端な判断は禁物。「伸ばす確信」or「確定の確信」のどちらか。
+
+JSON のみで回答:
+{
+  "decision": "hold" | "take_profit",
+  "confidence": 1-5,
+  "reasoning": "判断理由（モメンタムと文脈に基づき2-3文）"
+}`
+    : `保有株の売却タイミング最終確認です。
+
+【保有】${h.name}(${h.ticker})
+取得 ${h.purchase_price}円 × ${h.quantity}株
+現在 ${current}円 (含み益 ${gainPct.toFixed(1)}%)
+保有 ${daysHeld}日
+【テクニカル】${techSummary}
 
 【セグメント】${segmentLabel}
 【推奨戦略】${strategyLabel(strategy)}
 【発動した売却トリガー】${triggerReason}
 
-機械的にはこれは売却シグナルです。
-ただし、文脈で見て売らない方が良い場合もあります（例: 強い上昇トレンド継続中の一時調整など）。
-
-あなたの最終判断:
-- "take_profit": 利確売却すべき
-- "cut_loss": 損切すべき
-- "hold": 機械シグナルは出たが、文脈的にはまだ持続すべき
-
+文脈で見て売らない方が良い場合もあります。
 JSON のみで回答:
 {
   "decision": "take_profit" | "cut_loss" | "hold",
@@ -149,6 +209,9 @@ export async function POST() {
     const sinceBars = bars.slice(Math.max(0, bars.length - daysHeld - 1))
     const peakSinceEntry = Math.max(entry, ...sinceBars.map(b => b.high))
 
+    // AI 判定に渡すテクニカル指標
+    const ind = calcIndicators(bars)
+
     const trigger = checkStrategyTrigger(
       segment.recommendedStrategy, entry, current, daysHeld, sinceBars.slice(-5), peakSinceEntry,
     )
@@ -160,7 +223,16 @@ export async function POST() {
 
     if (trigger.shouldExit) {
       aiConfirm = await askAIForConfirmation(
-        h, segment.label, segment.recommendedStrategy, trigger.reason, gainPct, daysHeld,
+        h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
+        gainPct, daysHeld,
+        {
+          rsi14: ind.rsi14,
+          volumeRatio: ind.volumeRatio,
+          ma5: ind.ma5,
+          ma25: ind.ma25,
+          todayChangePct: ind.todayChangePct,
+          consecutiveUp: ind.consecutiveUp,
+        },
       )
       decision = aiConfirm.decision
       confidence = aiConfirm.confidence

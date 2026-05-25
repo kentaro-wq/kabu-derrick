@@ -22,7 +22,7 @@ export interface Segment {
 
 export type ExitStrategy =
   | 'fixed_20d'           // 固定20日保有 (中位×低ボラ)
-  | 'fixed_target_20_8'   // +20%利確 / -8%損切 (中位×中ボラ ← 黄金、深掘り検証で最強)
+  | 'adaptive_ai_exit'    // -8%損切 + 含み益5%超でAI毎日判定（「上がる勢いを伸ばす」哲学）
   | 'trailing_10'         // トレーリング-10% (高位)
   | 'consecutive_down'    // 連続陰線で売り (低位×低ボラ)
   | 'unknown'             // 未分類セグメント → 安全側 fixed_20d
@@ -30,7 +30,7 @@ export type ExitStrategy =
 const SEGMENT_TABLE: Record<string, Omit<Segment, 'priceTier' | 'volTier'>> = {
   'low_low':   { label: '低位×低ボラ', recommendedStrategy: 'consecutive_down',   expectedAvgReturn: 5.8, expectedWinRate: 75.5, rationale: '低位低ボラ群はじわじわ上昇する傾向。+5%超えた後の3日連続陰線で売却が最強(F戦略)' },
   'mid_low':   { label: '中位×低ボラ', recommendedStrategy: 'fixed_20d',          expectedAvgReturn: 3.7, expectedWinRate: 65.5, rationale: '中位低ボラ群はゆっくり動く。固定20日保有が最も安定。連続陰線は罠で大損率23%' },
-  'mid_mid':   { label: '中位×中ボラ🔥', recommendedStrategy: 'fixed_target_20_8', expectedAvgReturn: 17.2, expectedWinRate: 89.5, rationale: '【黄金セグメント】深掘り検証で+20%利確が最強と判明。平均+17.2%、+15%早期利確より+4.4pt 上回る' },
+  'mid_mid':   { label: '中位×中ボラ🔥', recommendedStrategy: 'adaptive_ai_exit', expectedAvgReturn: 17.2, expectedWinRate: 89.5, rationale: '【黄金セグメント】-8%損切+AI継続判定。「損は早く、利益は伸ばす」を実装。大勝チャンス(+30%超)を逃さない' },
   'high_low':  { label: '高位×低ボラ', recommendedStrategy: 'trailing_10',        expectedAvgReturn: 7.2, expectedWinRate: 75.7, rationale: '高位低ボラ群は機関がゆっくり押し上げる。トレーリング-10%でトレンドに乗る' },
   'high_mid':  { label: '高位×中ボラ', recommendedStrategy: 'trailing_10',        expectedAvgReturn: 10.0, expectedWinRate: 100.0, rationale: '高位中ボラ群も同様にトレーリング有効。サンプル数少 (n=11) なので参考値' },
   // 高ボラ系と未検証セグメントは fixed_20d (安全側) に倒す
@@ -87,7 +87,7 @@ export function classifySegment(price: number, vol: number): Segment {
 export function strategyLabel(s: ExitStrategy): string {
   switch (s) {
     case 'fixed_20d': return '固定20日保有'
-    case 'fixed_target_20_8': return '+20%利確 / -8%損切'
+    case 'adaptive_ai_exit': return '損切-8% + AI継続判定（伸ばし型）'
     case 'trailing_10': return 'トレーリングストップ-10%'
     case 'consecutive_down': return '利益+5%後の3日連続陰線で売り'
     case 'unknown': return '不明'
@@ -121,14 +121,17 @@ export function checkStrategyTrigger(
       }
       return { shouldExit: false, reason: `保有${daysHeld}/20日` }
 
-    case 'fixed_target_20_8':
-      if (gainPct >= 20) {
-        return { shouldExit: true, reason: `+20%目標達成 (実${gainPct.toFixed(1)}%)`, triggerType: 'take_profit' }
-      }
+    case 'adaptive_ai_exit':
+      // 損切り: -8% で機械的に発動（迷わない）
       if (gainPct <= -8) {
         return { shouldExit: true, reason: `-8%損切ライン到達 (実${gainPct.toFixed(1)}%)`, triggerType: 'cut_loss' }
       }
-      return { shouldExit: false, reason: `保有中 (${gainPct.toFixed(1)}%、目標+20/-8)` }
+      // 利確: 含み益+5%超なら毎日AIに「伸ばす？確定？」を聞く
+      if (gainPct >= 5) {
+        return { shouldExit: true, reason: `+${gainPct.toFixed(1)}%含み益、AIで継続判定`, triggerType: 'pattern' }
+      }
+      // それ未満は保有継続
+      return { shouldExit: false, reason: `保有中 (${gainPct.toFixed(1)}%、-8%損切/+5%超でAI判定)` }
 
     case 'trailing_10':
       const dropFromPeak = (current - peakSinceEntry) / peakSinceEntry * 100
