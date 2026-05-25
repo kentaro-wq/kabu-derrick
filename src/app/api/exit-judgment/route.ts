@@ -258,28 +258,37 @@ export async function POST() {
     let aiConfirm: AIOverride | null = null
 
     if (trigger.shouldExit) {
-      aiConfirm = await askAIForConfirmation(
-        h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
-        gainPct, daysHeld,
-        {
-          rsi14: ind.rsi14,
-          volumeRatio: ind.volumeRatio,
-          ma5: ind.ma5,
-          ma25: ind.ma25,
-          todayChangePct: ind.todayChangePct,
-          consecutiveUp: ind.consecutiveUp,
-        },
-        {
-          isNisa: h.account_type === 'nisa_growth',
-          monthsLeftInYear,
-          slotRemainingYen: nisaSlotRemaining,
-          slotUsedPct: nisaSlotUsedPct,
-        },
-        current,
-      )
-      decision = aiConfirm.decision
-      confidence = aiConfirm.confidence
-      reasoning = `[${trigger.reason}] AI判定: ${aiConfirm.reasoning}`
+      // ⚠️ 損切ラインは機械的に確定。AI の override を許さない（塩漬け防止）
+      // ユーザーの哲学: 「損切りを適切に」 = -8% で迷わず確定
+      if (trigger.triggerType === 'cut_loss') {
+        decision = 'cut_loss'
+        confidence = 5
+        reasoning = `[機械損切・AI判断省略] ${trigger.reason} / 哲学: 損切は迷わず確定`
+      } else {
+        // 利確・時間切れ・モメンタム判定は AI に最終確認
+        aiConfirm = await askAIForConfirmation(
+          h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
+          gainPct, daysHeld,
+          {
+            rsi14: ind.rsi14,
+            volumeRatio: ind.volumeRatio,
+            ma5: ind.ma5,
+            ma25: ind.ma25,
+            todayChangePct: ind.todayChangePct,
+            consecutiveUp: ind.consecutiveUp,
+          },
+          {
+            isNisa: h.account_type === 'nisa_growth',
+            monthsLeftInYear,
+            slotRemainingYen: nisaSlotRemaining,
+            slotUsedPct: nisaSlotUsedPct,
+          },
+          current,
+        )
+        decision = aiConfirm.decision
+        confidence = aiConfirm.confidence
+        reasoning = `[${trigger.reason}] AI判定: ${aiConfirm.reasoning}`
+      }
     } else {
       decision = 'hold'
       confidence = 4
