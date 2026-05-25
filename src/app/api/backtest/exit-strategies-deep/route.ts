@@ -26,6 +26,66 @@ function fixedTarget(entry: number, forward: Bar[], tp: number, sl: number): Exi
   return { exitDay: forward.length, exitPrice: last.close, returnPct: (last.close - entry) / entry * 100 }
 }
 
+/**
+ * Adaptive AI Exit (機械ルール近似版)
+ * -8% 損切 + 含み益+5%超でモメンタム機械判定 → 死亡で売却
+ *
+ * AI判定の近似ロジック:
+ *  ・終値 < MA5 → モメンタム死亡
+ *  ・RSI(14) >= 75 → 過熱で売却
+ *  ・2日連続陰線 → 売却
+ *  上記いずれも該当しなければ hold
+ */
+function adaptiveExit(entry: number, forward: Bar[]): ExitResult | null {
+  if (forward.length === 0) return null
+  const slLv = entry * 0.92  // -8%
+  for (let i = 0; i < forward.length; i++) {
+    const b = forward[i]
+    // 損切（日中安値到達でも発動）
+    if (b.low <= slLv) {
+      return { exitDay: i + 1, exitPrice: slLv, returnPct: -8 }
+    }
+    const gain = (b.close - entry) / entry * 100
+    // 利確判定
+    if (gain >= 5 && i >= 4) {
+      // MA5計算（過去5日終値）
+      const ma5 = forward.slice(i - 4, i + 1).reduce((s, b) => s + b.close, 0) / 5
+      // RSI(14)近似
+      const start = Math.max(0, i - 13)
+      const window = forward.slice(start, i + 1)
+      const ups: number[] = [], downs: number[] = []
+      for (let j = 1; j < window.length; j++) {
+        const diff = window[j].close - window[j - 1].close
+        if (diff > 0) ups.push(diff)
+        else if (diff < 0) downs.push(-diff)
+      }
+      const period = window.length - 1
+      const avgGain = ups.reduce((s, v) => s + v, 0) / period
+      const avgLoss = downs.reduce((s, v) => s + v, 0) / period
+      const rs = avgLoss > 0 ? avgGain / avgLoss : 100
+      const rsi = avgLoss > 0 ? 100 - 100 / (1 + rs) : 100
+
+      // 連続陰線判定（直近2日）
+      const consecutiveDown =
+        i >= 1 &&
+        forward[i].close < forward[i].open &&
+        forward[i - 1].close < forward[i - 1].open
+
+      // モメンタム判定
+      const belowMA5 = b.close < ma5
+      const overheated = rsi >= 75
+      const momentumDead = belowMA5 || overheated || consecutiveDown
+
+      if (momentumDead) {
+        return { exitDay: i + 1, exitPrice: b.close, returnPct: gain }
+      }
+    }
+  }
+  // 最後まで持つ
+  const last = forward[forward.length - 1]
+  return { exitDay: forward.length, exitPrice: last.close, returnPct: (last.close - entry) / entry * 100 }
+}
+
 /** +15%超えた後、高値から指定%下落で売る (利確以降のトレーリング) */
 function trailingAfterProfit(entry: number, forward: Bar[], activatePct: number, trailPct: number, sl: number): ExitResult | null {
   if (forward.length === 0) return null
@@ -52,7 +112,7 @@ function trailingAfterProfit(entry: number, forward: Bar[], activatePct: number,
 }
 
 const STRATEGIES = [
-  { key: 'A_15_8',  name: 'A: +15%利確/-8%損切 (現行)',  fn: (e: number, f: Bar[]) => fixedTarget(e, f, 15, -8) },
+  { key: 'A_15_8',  name: 'A: +15%利確/-8%損切 (旧)',  fn: (e: number, f: Bar[]) => fixedTarget(e, f, 15, -8) },
   { key: 'B_20_8',  name: 'B: +20%利確/-8%損切',          fn: (e: number, f: Bar[]) => fixedTarget(e, f, 20, -8) },
   { key: 'C_25_8',  name: 'C: +25%利確/-8%損切',          fn: (e: number, f: Bar[]) => fixedTarget(e, f, 25, -8) },
   { key: 'D_30_10', name: 'D: +30%利確/-10%損切',         fn: (e: number, f: Bar[]) => fixedTarget(e, f, 30, -10) },
@@ -60,6 +120,7 @@ const STRATEGIES = [
   { key: 'F_trail_15_5_8',  name: 'F: +15%到達後 高値-5%で売 (-8%損切)',  fn: (e: number, f: Bar[]) => trailingAfterProfit(e, f, 15, 5, -8) },
   { key: 'G_trail_15_10_8', name: 'G: +15%到達後 高値-10%で売 (-8%損切)', fn: (e: number, f: Bar[]) => trailingAfterProfit(e, f, 15, 10, -8) },
   { key: 'H_trail_20_5_8',  name: 'H: +20%到達後 高値-5%で売 (-8%損切)',  fn: (e: number, f: Bar[]) => trailingAfterProfit(e, f, 20, 5, -8) },
+  { key: 'I_adaptive', name: 'I: Adaptive AI Exit (現行/-8損切+モメンタム判定)', fn: (e: number, f: Bar[]) => adaptiveExit(e, f) },
 ]
 
 export async function GET() {
