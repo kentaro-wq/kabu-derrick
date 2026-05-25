@@ -47,6 +47,14 @@ interface AIOverride {
   reasoning: string
 }
 
+/** NISA成長枠コンテキスト */
+interface NisaContext {
+  isNisa: boolean
+  monthsLeftInYear: number
+  slotRemainingYen: number
+  slotUsedPct: number
+}
+
 /** AI 確認プロンプト
  *  triggerType に応じてプロンプトを変える:
  *   - 'cut_loss': 損切確認（簡素）
@@ -69,6 +77,7 @@ async function askAIForConfirmation(
     todayChangePct: number | null
     consecutiveUp: number
   },
+  nisa: NisaContext,
 ): Promise<AIOverride> {
   const current = Number(h.current_price)
   const techSummary = [
@@ -83,6 +92,17 @@ async function askAIForConfirmation(
   // adaptive AI exit の含み益判定（最重要シーン）
   const isProfitJudgment = triggerType === 'pattern' && gainPct >= 5
 
+  // NISA成長枠の特殊制約セクション
+  const nisaBlock = nisa.isNisa
+    ? `\n【🟢 NISA成長枠の制約】
+この銘柄は NISA成長枠 で保有しています。重要な税制ルール:
+- 売却すると今年の枠は復活しない（年間 240万円中、現在 ${nisa.slotUsedPct}% 使用済み、残 ${(nisa.slotRemainingYen/10000).toFixed(0)}万円）
+- 今年残り ${nisa.monthsLeftInYear}ヶ月
+- 売却の機会コスト: 売ると今年は新規投資の NISA優遇が縮小、特定口座(20%課税)での投資になる
+- ${nisa.monthsLeftInYear >= 6 ? '⚠️ 今年残り月数が多い → 売却の機会コスト大' : nisa.monthsLeftInYear >= 3 ? '中庸: 売却は通常通り判断' : '✓ 年末近い → 売却の機会コスト小、来年新枠で買い直し可能'}
+- 含み益確定 (キャピタルゲイン非課税) のメリットと、上記機会コストのトレードオフを考慮してください\n`
+    : (h.account_type === 'tokutei' ? '\n【特定口座】売却益に約20%の税金。NISA制約はなし\n' : '')
+
   const prompt = isProfitJudgment
     ? `あなたは「上がる銘柄を最後まで持ち続ける」哲学のトレーダーです。
 含み益が出ている保有銘柄について、今売るか持ち続けるかを判断してください。
@@ -94,7 +114,7 @@ async function askAIForConfirmation(
 
 【テクニカル】
 ${techSummary}
-
+${nisaBlock}
 ---
 判断指針:
 
@@ -103,6 +123,7 @@ ${techSummary}
 - 連続陽線、出来高伴う上昇
 - RSI 70未満で過熱ではない
 - トレンドがまだ生きている
+- ${nisa.isNisa && nisa.monthsLeftInYear >= 6 ? 'NISA枠の機会コストが大きい時期、よほど明確な利確サインでない限り持続' : ''}
 
 **take_profit（利確する）にすべき場面:**
 - 上昇モメンタムが死んだ兆候（MA5 下抜け、連続陰線）
@@ -114,12 +135,13 @@ ${techSummary}
 - 含み益が大きいほど、「もっと伸ばす」を優先する
 - でも、明らかに勢いが死んだら即確定
 - 中途半端な判断は禁物。「伸ばす確信」or「確定の確信」のどちらか。
+- ${nisa.isNisa ? 'NISA保有なら、特に年初/年央は売却の機会コストを意識せよ' : ''}
 
 JSON のみで回答:
 {
   "decision": "hold" | "take_profit",
   "confidence": 1-5,
-  "reasoning": "判断理由（モメンタムと文脈に基づき2-3文）"
+  "reasoning": "判断理由（モメンタムと文脈、NISA制約があれば言及、2-3文）"
 }`
     : `保有株の売却タイミング最終確認です。
 
@@ -182,6 +204,14 @@ export async function POST() {
   const idToken = await getIdToken()
   if (!idToken) return NextResponse.json({ error: 'jquants auth failed' }, { status: 503 })
 
+  // NISA 成長枠の状況を取得
+  const { data: profile } = await adminSupabase.from('profile').select('*').single()
+  const nisaUsed = Number(profile?.nisa_growth_used ?? 0)
+  const nisaLimit = Number(profile?.nisa_growth_limit ?? 2400000)
+  const nisaSlotRemaining = Math.max(0, nisaLimit - nisaUsed)
+  const nisaSlotUsedPct = Math.round((nisaUsed / nisaLimit) * 100)
+  const monthsLeftInYear = Math.max(0, 12 - new Date().getMonth() - 1)
+
   const results: Array<{
     ticker: string; name: string; segment: string; strategy: string;
     decision: string; reasoning: string; gainPct: number;
@@ -233,6 +263,12 @@ export async function POST() {
           ma25: ind.ma25,
           todayChangePct: ind.todayChangePct,
           consecutiveUp: ind.consecutiveUp,
+        },
+        {
+          isNisa: h.account_type === 'nisa_growth',
+          monthsLeftInYear,
+          slotRemainingYen: nisaSlotRemaining,
+          slotUsedPct: nisaSlotUsedPct,
         },
       )
       decision = aiConfirm.decision
