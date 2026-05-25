@@ -78,12 +78,14 @@ export async function POST() {
   // 売買最終日は12月最終営業日の数日前まで（受渡日ベース）。11月から準備を促す。
   const currentMonth = new Date().getMonth() + 1 // 1-12
   if (currentMonth >= 11) {
+    // realized_gain カラムを優先（手数料・税金等込みの実際値）
+    // 欠損時のみ (sell_price - buy_price) * quantity で代替
     const tokuteiRealizedGain = realizedTrades
       .filter(t => t.account_type === 'tokutei' || t.account_type === null)
       .reduce((sum, t) => {
+        if (t.realized_gain != null) return sum + Number(t.realized_gain)
         if (t.buy_price == null) return sum
-        const gain = (t.sell_price - t.buy_price) * t.quantity
-        return sum + gain
+        return sum + (t.sell_price - t.buy_price) * t.quantity
       }, 0)
 
     const tokuteiUnrealizedLosses = tokuteiHoldings.filter(h => (h.unrealized_gain ?? 0) < 0)
