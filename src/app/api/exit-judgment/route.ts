@@ -78,8 +78,8 @@ async function askAIForConfirmation(
     consecutiveUp: number
   },
   nisa: NisaContext,
+  current: number,  // J-Quants最新終値
 ): Promise<AIOverride> {
-  const current = Number(h.current_price)
   const techSummary = [
     indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
     indicators.volumeRatio != null ? `出来高比率: ${indicators.volumeRatio}倍` : '',
@@ -154,13 +154,13 @@ JSON のみで回答:
 【セグメント】${segmentLabel}
 【推奨戦略】${strategyLabel(strategy)}
 【発動した売却トリガー】${triggerReason}
-
+${nisaBlock}
 文脈で見て売らない方が良い場合もあります。
 JSON のみで回答:
 {
   "decision": "take_profit" | "cut_loss" | "hold",
   "confidence": 1-5,
-  "reasoning": "判断理由 (1-2文)"
+  "reasoning": "判断理由（NISA制約があれば言及、1-2文）"
 }`
 
   try {
@@ -230,14 +230,19 @@ export async function POST() {
 
     const pastBars = bars.slice(-20)
     const vol = calcVolatility(pastBars)
-    const segment = classifySegment(Number(h.current_price), vol)
+
+    // 判定に使う最新価格は J-Quants の最新終値（holdings.current_price は更新タイミングが別）
+    const latestPrice = bars[bars.length - 1]?.close ?? Number(h.current_price)
+    const segment = classifySegment(latestPrice, vol)
 
     const daysHeld = Math.floor((Date.now() - new Date(h.created_at).getTime()) / 86400000)
     const entry = Number(h.purchase_price)
-    const current = Number(h.current_price)
+    const current = latestPrice
     const gainPct = (current - entry) / entry * 100
 
-    const sinceBars = bars.slice(Math.max(0, bars.length - daysHeld - 1))
+    // daysHeld は暦日数なので、営業日換算 (1.4で割る) してbarsのインデックスに変換
+    const businessDaysHeld = Math.ceil(daysHeld / 1.4)
+    const sinceBars = bars.slice(Math.max(0, bars.length - businessDaysHeld - 1))
     const peakSinceEntry = Math.max(entry, ...sinceBars.map(b => b.high))
 
     // AI 判定に渡すテクニカル指標
@@ -270,6 +275,7 @@ export async function POST() {
           slotRemainingYen: nisaSlotRemaining,
           slotUsedPct: nisaSlotUsedPct,
         },
+        current,
       )
       decision = aiConfirm.decision
       confidence = aiConfirm.confidence
@@ -285,7 +291,7 @@ export async function POST() {
       name: h.name,
       judgment_date: today,
       purchase_price: h.purchase_price,
-      current_price: h.current_price,
+      current_price: current,  // 判定時のJ-Quants最新終値
       quantity: h.quantity,
       unrealized_gain_pct: gainPct,
       days_held: daysHeld,

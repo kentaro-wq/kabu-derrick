@@ -70,13 +70,13 @@ async function updateAllHoldingPrices(): Promise<{ updated: number; skipped: num
   }
 
   // 株価更新後、AI出口判定も自動実行（Hobby plan cron制約への対応：相乗り）
-  try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
-    await fetch(`${baseUrl}/api/exit-judgment`, { method: 'POST' }).catch(() => {})
-    details.push('AI出口判定を自動実行')
-  } catch (e) {
-    console.error('[market/update] exit-judgment trigger failed:', e)
-  }
+  // fire-and-forget（await しない）でタイムアウト連鎖を防止
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://kabu-derrick.vercel.app'
+  fetch(`${baseUrl}/api/exit-judgment`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(5000),  // 自身のtimeoutは短く（応答待ちで縛られない）
+  }).catch(e => console.error('[market/update] exit-judgment trigger failed:', e))
+  details.push('AI出口判定を非同期トリガー')
 
   return { updated, skipped, details }
 }

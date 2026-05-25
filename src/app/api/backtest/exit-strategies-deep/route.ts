@@ -50,18 +50,17 @@ function adaptiveExit(entry: number, forward: Bar[]): ExitResult | null {
     if (gain >= 5 && i >= 4) {
       // MA5計算（過去5日終値）
       const ma5 = forward.slice(i - 4, i + 1).reduce((s, b) => s + b.close, 0) / 5
-      // RSI(14)近似
-      const start = Math.max(0, i - 13)
-      const window = forward.slice(start, i + 1)
+      // RSI(14): 14日変化＝15バー必要
+      if (i < 14) continue
+      const window = forward.slice(i - 14, i + 1)  // 15バー
       const ups: number[] = [], downs: number[] = []
       for (let j = 1; j < window.length; j++) {
         const diff = window[j].close - window[j - 1].close
         if (diff > 0) ups.push(diff)
         else if (diff < 0) downs.push(-diff)
       }
-      const period = window.length - 1
-      const avgGain = ups.reduce((s, v) => s + v, 0) / period
-      const avgLoss = downs.reduce((s, v) => s + v, 0) / period
+      const avgGain = ups.reduce((s, v) => s + v, 0) / 14
+      const avgLoss = downs.reduce((s, v) => s + v, 0) / 14
       const rs = avgLoss > 0 ? avgGain / avgLoss : 100
       const rsi = avgLoss > 0 ? 100 - 100 / (1 + rs) : 100
 
