@@ -37,6 +37,39 @@ export function formatImportantNotification(params: {
   return msg
 }
 
+/**
+ * AI出口判定通知 — 売却/損切推奨が出た時のみ通知
+ * 「継続」だけの日はノイズなので通知しない
+ */
+export function formatExitJudgmentAlert(judgments: Array<{
+  name: string
+  ticker: string
+  decision: 'hold' | 'take_profit' | 'cut_loss'
+  gainPct: number
+  reasoning: string
+  segment?: string
+  strategy?: string
+}>): string | null {
+  const actionables = judgments.filter(j => j.decision !== 'hold')
+  if (actionables.length === 0) return null
+
+  const date = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' })
+  let msg = `🎯 AI出口判定 アラート\n${date}\n\n`
+  msg += `売却/損切の推奨が出ています:\n\n`
+
+  for (const j of actionables) {
+    const icon = j.decision === 'take_profit' ? '💰' : '✂️'
+    const action = j.decision === 'take_profit' ? '利確推奨' : '損切推奨'
+    const gainStr = `${j.gainPct >= 0 ? '+' : ''}${j.gainPct.toFixed(1)}%`
+    msg += `${icon} ${j.name}(${j.ticker})  ${gainStr}\n`
+    msg += `【${action}】\n`
+    msg += `理由: ${j.reasoning}\n\n`
+  }
+
+  msg += `楽天証券で実行をご検討ください。\nアプリで詳細確認 →`
+  return msg
+}
+
 export function formatMorningReport(params: {
   totalAssets: number
   totalGain: number

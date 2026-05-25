@@ -22,6 +22,7 @@ import {
   strategyLabel, type ExitStrategy,
 } from '@/lib/segment'
 import { calcIndicators } from '@/lib/technicals'
+import { sendLineMessage, formatExitJudgmentAlert } from '@/lib/line'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -271,7 +272,52 @@ export async function POST() {
     })
   }
 
-  return NextResponse.json({ ok: true, date: today, count: results.length, results })
+  // LINE 通知: 売却/損切推奨が出た銘柄があれば
+  let lineNotified = false
+  const actionables = results.filter(r => r.decision !== 'hold')
+  if (actionables.length > 0) {
+    // 同じ銘柄に対して直近24時間で既に通知済みかチェック（重複防止）
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: recentNotified } = await adminSupabase
+      .from('exit_judgments')
+      .select('ticker, decision, line_notified_at')
+      .gte('line_notified_at', since)
+      .in('ticker', actionables.map(a => a.ticker))
+
+    const alreadyNotifiedTickers = new Set(
+      (recentNotified ?? [])
+        .filter(r => r.decision !== 'hold' && r.line_notified_at)
+        .map(r => r.ticker)
+    )
+
+    const toNotify = actionables.filter(a => !alreadyNotifiedTickers.has(a.ticker))
+    if (toNotify.length > 0) {
+      const message = formatExitJudgmentAlert(toNotify.map(a => ({
+        name: a.name, ticker: a.ticker,
+        decision: a.decision as 'hold' | 'take_profit' | 'cut_loss',
+        gainPct: a.gainPct,
+        reasoning: a.reasoning,
+        segment: a.segment,
+        strategy: a.strategy,
+      })))
+      if (message) {
+        lineNotified = await sendLineMessage(message)
+        if (lineNotified) {
+          // 通知済みフラグ
+          await adminSupabase
+            .from('exit_judgments')
+            .update({ line_notified_at: new Date().toISOString() })
+            .eq('judgment_date', today)
+            .in('ticker', toNotify.map(a => a.ticker))
+        }
+      }
+    }
+  }
+
+  return NextResponse.json({
+    ok: true, date: today, count: results.length, results,
+    lineNotified, actionableCount: actionables.length,
+  })
 }
 
 export async function GET() {
