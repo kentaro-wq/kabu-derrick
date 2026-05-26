@@ -265,6 +265,15 @@ export async function POST() {
     decision: string; reasoning: string; gainPct: number;
   }> = []
 
+  // === 価格データ乖離スキップの収集 ===
+  // 判断にかかわる致命的問題のため、必ずLINE通知する（無視させない）
+  // 過去事例: 8766 で J-Quants が分割未反映で 6,119円、Yahoo は分割後 7,387円
+  //   → 機械的に「-14%損切」判定が出るが実際は +3.5% の含み益という重大な誤判定が発生した
+  const skippedDivergences: Array<{
+    ticker: string; name: string; jquantsPrice: number; yahooPrice: number; divergencePct: number
+  }> = []
+  const PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT = 5
+
   for (const h of holdings) {
     if (!h.current_price || !h.purchase_price) continue
 
@@ -281,6 +290,23 @@ export async function POST() {
 
     // 判定に使う最新価格は J-Quants の最新終値（holdings.current_price は更新タイミングが別）
     const latestPrice = bars[bars.length - 1]?.close ?? Number(h.current_price)
+
+    // === データ整合性チェック: J-Quants vs Yahoo (holdings) ===
+    // 株式分割・配当落ち調整の片側未反映を検知。乖離大なら判定スキップ。
+    const yahooPrice = Number(h.current_price)
+    if (yahooPrice > 0 && latestPrice > 0) {
+      const divergencePct = Math.abs((latestPrice - yahooPrice) / yahooPrice) * 100
+      if (divergencePct >= PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT) {
+        skippedDivergences.push({
+          ticker: h.ticker,
+          name: h.name,
+          jquantsPrice: latestPrice,
+          yahooPrice,
+          divergencePct: Math.round(divergencePct * 10) / 10,
+        })
+        continue // 判定スキップ：誤判定リスクが大きすぎる
+      }
+    }
     const segment = classifySegment(latestPrice, vol)
 
     const daysHeld = Math.floor((Date.now() - new Date(h.created_at).getTime()) / 86400000)
@@ -371,6 +397,29 @@ export async function POST() {
     })
   }
 
+  // === 価格データ乖離の強制通知 ===
+  // ユーザーへの「判断ミス」を防ぐため、乖離検知は必ず通知する
+  if (skippedDivergences.length > 0) {
+    const divMsg = [
+      '🚨 マイ株デリック 出口判定スキップ警告',
+      `データソース間で価格 ${PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT}% 超の乖離`,
+      '誤判定回避のため当日の自動判定を保留しました',
+      '',
+      ...skippedDivergences.map(s =>
+        `▶ ${s.name}(${s.ticker})\n  J-Quants ${s.jquantsPrice.toLocaleString()}円 / Yahoo ${s.yahooPrice.toLocaleString()}円 (乖離${s.divergencePct}%)`
+      ),
+      '',
+      '考えられる原因:',
+      '・株式分割/併合の片側未反映',
+      '・大型配当落ちの調整差',
+      '・データソース側の遅延・異常',
+      '',
+      '⚠️ この銘柄は手動確認まで自動判定が出ません',
+    ].join('\n')
+    await sendLineMessage(divMsg).catch(() => { /* 通知失敗は無視（ログのみ） */ })
+    console.warn('[exit-judgment] price source divergence:', skippedDivergences)
+  }
+
   // LINE 通知: 売却/損切推奨が出た銘柄があれば
   let lineNotified = false
   const actionables = results.filter(r => r.decision !== 'hold')
@@ -416,6 +465,7 @@ export async function POST() {
   return NextResponse.json({
     ok: true, date: today, count: results.length, results,
     lineNotified, actionableCount: actionables.length,
+    skippedDivergences,
   })
 }
 
