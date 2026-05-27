@@ -88,6 +88,50 @@ export async function fetchYahooBars(ticker: string, range = '3mo'): Promise<Yah
   }
 }
 
+/**
+ * Yahoo Finance から年間配当情報を取得
+ * 直近1年の配当合計と、現在価格に対する利回りを返す
+ * 取得失敗時は null（配当なし銘柄 or データ取得不可）
+ */
+export interface DividendInfo {
+  annualDividend: number  // 直近1年の配当合計（円）
+  yieldPct: number        // 利回り(%) = annualDividend / 現在価格 × 100
+  lastExDate: string      // 直近の権利確定日 (ISO date)
+}
+
+export async function fetchDividendInfo(ticker: string): Promise<DividendInfo | null> {
+  const symbol = /^\d{4}$/.test(ticker) ? `${ticker}.T` : ticker
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1y&events=div`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const r = data.chart?.result?.[0]
+    if (!r) return null
+    const currentPrice = r.meta?.regularMarketPrice
+    const dividends = r.events?.dividends ?? {}
+    const divEntries = Object.values(dividends) as Array<{ amount: number; date: number }>
+    if (divEntries.length === 0 || !currentPrice) return null
+    // 直近1年の配当合計
+    const oneYearAgo = Date.now() / 1000 - 365 * 86400
+    const recentDivs = divEntries.filter(d => d.date >= oneYearAgo)
+    if (recentDivs.length === 0) return null
+    const annualDividend = recentDivs.reduce((s, d) => s + d.amount, 0)
+    const yieldPct = (annualDividend / currentPrice) * 100
+    const lastExDate = new Date(Math.max(...recentDivs.map(d => d.date)) * 1000)
+      .toISOString().slice(0, 10)
+    return {
+      annualDividend: Math.round(annualDividend * 100) / 100,
+      yieldPct: Math.round(yieldPct * 100) / 100,
+      lastExDate,
+    }
+  } catch {
+    return null
+  }
+}
+
 // テキストから日本株の証券コード（4桁数字）を抽出する
 // 1300〜9999 の範囲に絞ることで年号・金額などの誤検出を減らす
 export function extractTickers(text: string): string[] {

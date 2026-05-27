@@ -17,7 +17,7 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { fetchOHLCVHistoryCached, getIdToken, isJQuantsConfigured } from '@/lib/jquants'
-import { fetchYahooBars } from '@/lib/stock-price'
+import { fetchYahooBars, fetchDividendInfo, type DividendInfo } from '@/lib/stock-price'
 
 // decision_log への記録ヘルパー
 // 全 AI判定・全スキップを永続化することで、再現性検証と事後分析を可能にする
@@ -103,6 +103,7 @@ async function askAIForConfirmation(
   },
   nisa: NisaContext,
   current: number,  // J-Quants最新終値
+  dividend: DividendInfo | null,
 ): Promise<AIOverride> {
   const techSummary = [
     indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
@@ -128,6 +129,17 @@ async function askAIForConfirmation(
 - 含み益確定 (キャピタルゲイン非課税) のメリットと、上記機会コストのトレードオフを考慮してください\n`
     : (h.account_type === 'tokutei' ? '\n【特定口座】売却益に約20%の税金。NISA制約はなし\n' : '')
 
+  // 配当利回りセクション
+  // 高配当銘柄は売却で配当収入を失うため、長期保有のインセンティブが強い
+  // 例: 利回り3%なら含み損-3%は1年で取り返せる → 安易な損切は機会損失
+  const dividendBlock = dividend && dividend.yieldPct > 0
+    ? `\n【💰 配当収入】
+- 年間配当 ${dividend.annualDividend}円/株 (利回り ${dividend.yieldPct}%)
+- 直近権利確定日: ${dividend.lastExDate}
+- ${dividend.yieldPct >= 3 ? '⭐ 高配当銘柄: 売却で年率3%超の配当収入を失う。長期保有の価値が高い' : dividend.yieldPct >= 2 ? '中配当: 配当も含めた総合リターンで判断' : '低配当: 売買判断への影響は小さい'}
+- 売却判断には「キャピタル損益 + 想定配当収入」を総合評価\n`
+    : ''
+
   // 第一防衛線損切判定の専用プロンプト
   const lossPrompt = `あなたは含み損銘柄の「損切すべきか持続すべきか」を判断する冷静なトレーダーです。
 
@@ -138,7 +150,7 @@ async function askAIForConfirmation(
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}
+${nisaBlock}${dividendBlock}
 ---
 
 判断の本質 (利益最大化視点):
@@ -186,7 +198,7 @@ JSON のみ:
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}
+${nisaBlock}${dividendBlock}
 ---
 判断指針:
 
@@ -226,7 +238,7 @@ JSON のみで回答:
 【セグメント】${segmentLabel}
 【推奨戦略】${strategyLabel(strategy)}
 【発動した売却トリガー】${triggerReason}
-${nisaBlock}
+${nisaBlock}${dividendBlock}
 文脈で見て売らない方が良い場合もあります。
 JSON のみで回答:
 {
@@ -442,6 +454,9 @@ export async function POST() {
         confidence = 5
         reasoning = `[機械損切・AI判断省略] ${trigger.reason} / 哲学: 損切は迷わず確定`
       } else {
+        // 配当情報を取得（AI判定に総合リターン視点で組込み）
+        // 失敗時は null で AI に渡す（プロンプト側で空セクション化）
+        const dividend = await fetchDividendInfo(h.ticker)
         // 利確・時間切れ・モメンタム判定は AI に最終確認
         aiConfirm = await askAIForConfirmation(
           h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
@@ -461,6 +476,7 @@ export async function POST() {
             slotUsedPct: nisaSlotUsedPct,
           },
           current,
+          dividend,
         )
         decision = aiConfirm.decision
         confidence = aiConfirm.confidence
