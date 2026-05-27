@@ -17,6 +17,7 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { fetchOHLCVHistoryCached, getIdToken, isJQuantsConfigured } from '@/lib/jquants'
+import { fetchYahooBars } from '@/lib/stock-price'
 import {
   classifySegment, calcVolatility, checkStrategyTrigger,
   strategyLabel, type ExitStrategy,
@@ -272,9 +273,14 @@ export async function POST() {
     ticker: string; name: string; jquantsPrice: number; yahooPrice: number; divergencePct: number
   }> = []
   const skippedDataMissing: Array<{ ticker: string; name: string; reason: string }> = []
+  const skippedStaleData: Array<{ ticker: string; name: string; latestDate: string; daysOld: number }> = []
   // 5% は値動きの激しい日に誤発火しやすいため 10% に緩和
   // (現実の1日変動 + データタイミング差で 5% は超え得る)
   const PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT = 10
+  // J-Quants bars の最新日付が今日から何日以上古ければ「stale」とみなすか
+  // 過去事例: J-Quants の bars が 3ヶ月前で止まっていて、機械的損切判定が
+  // 古いデータで誤発火していた。週末・祝日を考慮して 5 日以上のズレを stale と判定。
+  const JQUANTS_STALE_DAYS_THRESHOLD = 5
 
   for (const h of holdings) {
     if (!h.current_price || !h.purchase_price) {
@@ -299,16 +305,53 @@ export async function POST() {
       continue
     }
 
-    const pastBars = bars.slice(-20)
+    // === J-Quants データ鮮度チェック + Yahoo フォールバック ===
+    // J-Quants の最新 bar が古ければ Yahoo データに切替えて判定継続
+    // 古いデータでの判定 = 致命的なので、Yahoo フォールバックで救済
+    let workingBars = bars
+    let dataSource: 'jquants' | 'yahoo_fallback' = 'jquants'
+    const latestBar = bars[bars.length - 1]
+    const latestBarDate = latestBar?.date as string | undefined
+    if (latestBarDate) {
+      const daysOld = Math.floor((Date.now() - new Date(latestBarDate).getTime()) / 86400000)
+      if (daysOld >= JQUANTS_STALE_DAYS_THRESHOLD) {
+        // Yahoo にフォールバック
+        const yahooBars = await fetchYahooBars(h.ticker, '3mo')
+        if (yahooBars.length < 25) {
+          skippedStaleData.push({
+            ticker: h.ticker, name: h.name,
+            latestDate: latestBarDate,
+            daysOld,
+          })
+          continue
+        }
+        // Yahoo bar の鮮度もチェック
+        const yahooLatest = yahooBars[yahooBars.length - 1]
+        const yahooDaysOld = Math.floor((Date.now() - new Date(yahooLatest.date).getTime()) / 86400000)
+        if (yahooDaysOld >= JQUANTS_STALE_DAYS_THRESHOLD) {
+          skippedStaleData.push({
+            ticker: h.ticker, name: h.name,
+            latestDate: `J-Quants ${latestBarDate} / Yahoo ${yahooLatest.date}`,
+            daysOld: Math.max(daysOld, yahooDaysOld),
+          })
+          continue
+        }
+        workingBars = yahooBars
+        dataSource = 'yahoo_fallback'
+      }
+    }
+
+    const pastBars = workingBars.slice(-20)
     const vol = calcVolatility(pastBars)
 
-    // 判定に使う最新価格は J-Quants の最新終値（holdings.current_price は更新タイミングが別）
-    const latestPrice = bars[bars.length - 1]?.close ?? Number(h.current_price)
+    // 判定に使う最新価格はフォールバック後の最新終値
+    const latestPrice = workingBars[workingBars.length - 1]?.close ?? Number(h.current_price)
 
     // === データ整合性チェック: J-Quants vs Yahoo (holdings) ===
     // 株式分割・配当落ち調整の片側未反映を検知。乖離大なら判定スキップ。
+    // ただし dataSource='yahoo_fallback' なら両方とも Yahoo 由来なのでチェック不要
     const yahooPrice = Number(h.current_price)
-    if (yahooPrice > 0 && latestPrice > 0) {
+    if (dataSource === 'jquants' && yahooPrice > 0 && latestPrice > 0) {
       const divergencePct = Math.abs((latestPrice - yahooPrice) / yahooPrice) * 100
       if (divergencePct >= PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT) {
         skippedDivergences.push({
@@ -330,11 +373,11 @@ export async function POST() {
 
     // daysHeld は暦日数なので、営業日換算 (1.4で割る) してbarsのインデックスに変換
     const businessDaysHeld = Math.ceil(daysHeld / 1.4)
-    const sinceBars = bars.slice(Math.max(0, bars.length - businessDaysHeld - 1))
+    const sinceBars = workingBars.slice(Math.max(0, workingBars.length - businessDaysHeld - 1))
     const peakSinceEntry = Math.max(entry, ...sinceBars.map(b => b.high))
 
     // AI 判定に渡すテクニカル指標
-    const ind = calcIndicators(bars)
+    const ind = calcIndicators(workingBars)
 
     const trigger = checkStrategyTrigger(
       segment.recommendedStrategy, entry, current, daysHeld, sinceBars.slice(-5), peakSinceEntry,
@@ -383,12 +426,16 @@ export async function POST() {
       reasoning = `[${segment.label}][${strategyLabel(segment.recommendedStrategy)}] ${trigger.reason}`
     }
 
+    // データソース明示（後の検証で「どのデータで判定したか」が追える）
+    const sourceTag = dataSource === 'yahoo_fallback' ? ' [Yahooフォールバック]' : ''
+    reasoning = `${reasoning}${sourceTag}`
+
     await adminSupabase.from('exit_judgments').insert({
       ticker: h.ticker,
       name: h.name,
       judgment_date: today,
       purchase_price: h.purchase_price,
-      current_price: current,  // 判定時のJ-Quants最新終値
+      current_price: current,  // 判定時の最新終値（J-Quants または Yahoo）
       quantity: h.quantity,
       unrealized_gain_pct: gainPct,
       days_held: daysHeld,
@@ -396,7 +443,7 @@ export async function POST() {
       decision,
       confidence,
       reasoning,
-      risk_factors: aiConfirm ? null : `セグメント:${segment.label}/戦略:${strategyLabel(segment.recommendedStrategy)}`,
+      risk_factors: aiConfirm ? null : `セグメント:${segment.label}/戦略:${strategyLabel(segment.recommendedStrategy)}/source:${dataSource}`,
       expected_action_within_days: decision === 'hold' ? 7 : 0,
     })
 
@@ -427,6 +474,13 @@ export async function POST() {
     skipMsgs.push(
       '【データ不足で判定不能】',
       ...skippedDataMissing.map(s => `▶ ${s.name}(${s.ticker}): ${s.reason}`)
+    )
+  }
+  if (skippedStaleData.length > 0) {
+    skipMsgs.push(
+      `【J-Quants データ鮮度不足 (${JQUANTS_STALE_DAYS_THRESHOLD}日以上古い)】`,
+      ...skippedStaleData.map(s => `▶ ${s.name}(${s.ticker}): 最新bar ${s.latestDate} (${s.daysOld}日前)`),
+      '原因: J-Quants API の遅延・無料プラン制約・キャッシュ問題等'
     )
   }
   if (skipMsgs.length > 0) {
@@ -489,6 +543,7 @@ export async function POST() {
     lineNotified, actionableCount: actionables.length,
     skippedDivergences,
     skippedDataMissing,
+    skippedStaleData,
   })
 }
 

@@ -27,6 +27,67 @@ export async function fetchPrice(ticker: string): Promise<number | null> {
   }
 }
 
+/**
+ * Yahoo Finance から OHLCV bars を取得（J-Quants フォールバック用）
+ * J-Quants 無料プランの遅延・キャッシュ問題で直近データが取れない時に使う。
+ * AdjC は無いので、株式分割がある銘柄では時系列ジャンプが発生する点に注意。
+ */
+interface YahooBar {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+interface YahooChartFullResult {
+  chart: {
+    result: Array<{
+      timestamp: number[]
+      indicators: {
+        quote: Array<{
+          open: (number | null)[]
+          high: (number | null)[]
+          low: (number | null)[]
+          close: (number | null)[]
+          volume: (number | null)[]
+        }>
+      }
+    }> | null
+    error: unknown
+  }
+}
+
+export async function fetchYahooBars(ticker: string, range = '3mo'): Promise<YahooBar[]> {
+  const symbol = /^\d{4}$/.test(ticker) ? `${ticker}.T` : ticker
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=${range}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) }
+    )
+    if (!res.ok) return []
+    const data: YahooChartFullResult = await res.json()
+    const r = data.chart?.result?.[0]
+    if (!r) return []
+    const ts = r.timestamp ?? []
+    const q = r.indicators?.quote?.[0]
+    if (!q) return []
+    const bars: YahooBar[] = []
+    for (let i = 0; i < ts.length; i++) {
+      const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i], v = q.volume[i]
+      if (o == null || h == null || l == null || c == null) continue
+      bars.push({
+        date: new Date(ts[i] * 1000).toISOString().slice(0, 10),
+        open: o, high: h, low: l, close: c, volume: v ?? 0,
+      })
+    }
+    return bars
+  } catch {
+    return []
+  }
+}
+
 // テキストから日本株の証券コード（4桁数字）を抽出する
 // 1300〜9999 の範囲に絞ることで年号・金額などの誤検出を減らす
 export function extractTickers(text: string): string[] {
