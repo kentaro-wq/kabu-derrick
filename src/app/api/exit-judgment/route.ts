@@ -265,25 +265,39 @@ export async function POST() {
     decision: string; reasoning: string; gainPct: number;
   }> = []
 
-  // === 価格データ乖離スキップの収集 ===
-  // 判断にかかわる致命的問題のため、必ずLINE通知する（無視させない）
-  // 株式分割・配当落ち調整の片側未反映により、機械的損切判定が
-  // 誤発火するリスクを回避する
+  // === スキップ理由を必ずユーザーに通知する設計 ===
+  // 「判定が出ない=判断不能」もユーザーが知るべき重大事象。
+  // silent skip は「AI判断に従う」哲学を破壊するため許容しない。
   const skippedDivergences: Array<{
     ticker: string; name: string; jquantsPrice: number; yahooPrice: number; divergencePct: number
   }> = []
-  const PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT = 5
+  const skippedDataMissing: Array<{ ticker: string; name: string; reason: string }> = []
+  // 5% は値動きの激しい日に誤発火しやすいため 10% に緩和
+  // (現実の1日変動 + データタイミング差で 5% は超え得る)
+  const PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT = 10
 
   for (const h of holdings) {
-    if (!h.current_price || !h.purchase_price) continue
+    if (!h.current_price || !h.purchase_price) {
+      skippedDataMissing.push({
+        ticker: h.ticker, name: h.name,
+        reason: !h.current_price ? 'current_price 未取得' : 'purchase_price 未設定',
+      })
+      continue
+    }
 
     const { data: existing } = await adminSupabase
       .from('exit_judgments').select('id')
       .eq('ticker', h.ticker).eq('judgment_date', today).limit(1)
-    if (existing && existing.length > 0) continue
+    if (existing && existing.length > 0) continue  // 同日既存はスキップが正常動作
 
     const bars = await fetchOHLCVHistoryCached(h.ticker, 60, idToken)
-    if (bars.length < 25) continue
+    if (bars.length < 25) {
+      skippedDataMissing.push({
+        ticker: h.ticker, name: h.name,
+        reason: `J-Quants bars 不足 (${bars.length}本/25本必要)`,
+      })
+      continue
+    }
 
     const pastBars = bars.slice(-20)
     const vol = calcVolatility(pastBars)
@@ -397,27 +411,35 @@ export async function POST() {
     })
   }
 
-  // === 価格データ乖離の強制通知 ===
-  // ユーザーへの「判断ミス」を防ぐため、乖離検知は必ず通知する
+  // === スキップ通知（必ず送出） ===
+  // 「判定不能」もユーザーが知るべき。silent skip を許さない設計。
+  const skipMsgs: string[] = []
   if (skippedDivergences.length > 0) {
-    const divMsg = [
-      '🚨 マイ株デリック 出口判定スキップ警告',
-      `データソース間で価格 ${PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT}% 超の乖離`,
-      '誤判定回避のため当日の自動判定を保留しました',
-      '',
+    skipMsgs.push(
+      `【価格データ乖離 ${PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT}%超】`,
       ...skippedDivergences.map(s =>
         `▶ ${s.name}(${s.ticker})\n  J-Quants ${s.jquantsPrice.toLocaleString()}円 / Yahoo ${s.yahooPrice.toLocaleString()}円 (乖離${s.divergencePct}%)`
       ),
+      '原因: 株式分割/併合・大型配当落ち・データソース異常 等'
+    )
+  }
+  if (skippedDataMissing.length > 0) {
+    skipMsgs.push(
+      '【データ不足で判定不能】',
+      ...skippedDataMissing.map(s => `▶ ${s.name}(${s.ticker}): ${s.reason}`)
+    )
+  }
+  if (skipMsgs.length > 0) {
+    const fullMsg = [
+      '🚨 マイ株デリック 出口判定スキップ警告',
+      '以下の銘柄は当日の自動判定が出ていません',
       '',
-      '考えられる原因:',
-      '・株式分割/併合の片側未反映',
-      '・大型配当落ちの調整差',
-      '・データソース側の遅延・異常',
+      ...skipMsgs,
       '',
-      '⚠️ この銘柄は手動確認まで自動判定が出ません',
+      '⚠️ 該当銘柄は手動確認するまで自動判定が出ません',
     ].join('\n')
-    await sendLineMessage(divMsg).catch(() => { /* 通知失敗は無視（ログのみ） */ })
-    console.warn('[exit-judgment] price source divergence:', skippedDivergences)
+    await sendLineMessage(fullMsg).catch(() => { /* 通知失敗は無視（ログのみ） */ })
+    console.warn('[exit-judgment] skipped:', { skippedDivergences, skippedDataMissing })
   }
 
   // LINE 通知: 売却/損切推奨が出た銘柄があれば
@@ -466,6 +488,7 @@ export async function POST() {
     ok: true, date: today, count: results.length, results,
     lineNotified, actionableCount: actionables.length,
     skippedDivergences,
+    skippedDataMissing,
   })
 }
 

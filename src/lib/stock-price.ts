@@ -3,7 +3,9 @@ interface YahooChartResult {
     result: Array<{
       meta: {
         regularMarketPrice: number
-        previousClose: number
+        // 注: Yahoo Finance API は previousClose を常に null で返す（API仕様）。
+        // 前日終値が必要な場合は chartPreviousClose (range=2d で取得) を使う。
+        // 当ファイルの fetchPrice は最新価格のみ取得する用途なので未使用。
       }
     }> | null
     error: unknown
