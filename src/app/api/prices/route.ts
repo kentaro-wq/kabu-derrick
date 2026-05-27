@@ -83,7 +83,7 @@ export async function POST() {
       '考えられる原因:',
       '・株式分割/併合の未反映 → holdings の quantity 確認',
       '・データソース異常 → 翌朝再取得で解消するか確認',
-      '・単元数の入力ミス → SBI画面と照合',
+      '・単元数の入力ミス → 証券会社画面と照合',
     ].join('\n')
     await sendLineMessage(msg).catch(() => { /* 通知失敗は無視 */ })
   }

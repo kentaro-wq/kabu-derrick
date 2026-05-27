@@ -267,8 +267,8 @@ export async function POST() {
 
   // === 価格データ乖離スキップの収集 ===
   // 判断にかかわる致命的問題のため、必ずLINE通知する（無視させない）
-  // 過去事例: 8766 で J-Quants が分割未反映で 6,119円、Yahoo は分割後 7,387円
-  //   → 機械的に「-14%損切」判定が出るが実際は +3.5% の含み益という重大な誤判定が発生した
+  // 株式分割・配当落ち調整の片側未反映により、機械的損切判定が
+  // 誤発火するリスクを回避する
   const skippedDivergences: Array<{
     ticker: string; name: string; jquantsPrice: number; yahooPrice: number; divergencePct: number
   }> = []
