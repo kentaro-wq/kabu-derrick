@@ -334,62 +334,56 @@ export async function POST() {
     if (existing && existing.length > 0) continue  // 同日既存はスキップが正常動作
 
     const bars = await fetchOHLCVHistoryCached(h.ticker, 60, idToken)
-    if (bars.length < 25) {
-      const reason = `J-Quants bars 不足 (${bars.length}本/25本必要)`
-      skippedDataMissing.push({ ticker: h.ticker, name: h.name, reason })
-      await logDecision({
-        ticker: h.ticker, action: 'exit_skip_data_missing',
-        reason, outcome: 'skipped',
-      })
-      continue
-    }
 
-    // === J-Quants データ鮮度チェック + Yahoo フォールバック ===
-    // J-Quants の最新 bar が古ければ Yahoo データに切替えて判定継続
-    // 古いデータでの判定 = 致命的なので、Yahoo フォールバックで救済
+    // === J-Quants 状態評価 + Yahoo フォールバック ===
+    // J-Quants が「bars不足」「データ古い」いずれの場合も Yahoo にフォールバック
+    // 古いデータ・データ無しでの判定 = 致命的なので、Yahoo で救済できるなら救済
     let workingBars = bars
     let dataSource: 'jquants' | 'yahoo_fallback' = 'jquants'
     const latestBar = bars[bars.length - 1]
     const latestBarDate = latestBar?.date as string | undefined
-    if (latestBarDate) {
-      const daysOld = Math.floor((Date.now() - new Date(latestBarDate).getTime()) / 86400000)
-      if (daysOld >= JQUANTS_STALE_DAYS_THRESHOLD) {
-        // Yahoo にフォールバック
-        const yahooBars = await fetchYahooBars(h.ticker, '3mo')
-        if (yahooBars.length < 25) {
-          skippedStaleData.push({
-            ticker: h.ticker, name: h.name,
-            latestDate: latestBarDate,
-            daysOld,
-          })
-          await logDecision({
-            ticker: h.ticker, action: 'exit_skip_stale_data',
-            reason: `J-Quants ${latestBarDate} (${daysOld}日前), Yahoo bars 不足(${yahooBars.length})`,
-            ai_advice: { jquants_latest: latestBarDate, jquants_days_old: daysOld, yahoo_bars: yahooBars.length },
-            outcome: 'skipped',
-          })
-          continue
-        }
-        // Yahoo bar の鮮度もチェック
-        const yahooLatest = yahooBars[yahooBars.length - 1]
-        const yahooDaysOld = Math.floor((Date.now() - new Date(yahooLatest.date).getTime()) / 86400000)
-        if (yahooDaysOld >= JQUANTS_STALE_DAYS_THRESHOLD) {
-          skippedStaleData.push({
-            ticker: h.ticker, name: h.name,
-            latestDate: `J-Quants ${latestBarDate} / Yahoo ${yahooLatest.date}`,
-            daysOld: Math.max(daysOld, yahooDaysOld),
-          })
-          await logDecision({
-            ticker: h.ticker, action: 'exit_skip_stale_data',
-            reason: `両ソース古い (J-Quants ${daysOld}日前, Yahoo ${yahooDaysOld}日前)`,
-            ai_advice: { jquants_latest: latestBarDate, yahoo_latest: yahooLatest.date },
-            outcome: 'skipped',
-          })
-          continue
-        }
-        workingBars = yahooBars
-        dataSource = 'yahoo_fallback'
+    const jqDaysOld = latestBarDate
+      ? Math.floor((Date.now() - new Date(latestBarDate).getTime()) / 86400000)
+      : Infinity
+    const needsFallback = bars.length < 25 || jqDaysOld >= JQUANTS_STALE_DAYS_THRESHOLD
+
+    if (needsFallback) {
+      const yahooBars = await fetchYahooBars(h.ticker, '3mo')
+      const fallbackReason = bars.length < 25
+        ? `J-Quants bars 不足 (${bars.length}本)`
+        : `J-Quants 鮮度不足 (${latestBarDate}, ${jqDaysOld}日前)`
+
+      if (yahooBars.length < 25) {
+        skippedDataMissing.push({
+          ticker: h.ticker, name: h.name,
+          reason: `${fallbackReason} + Yahoo bars 不足(${yahooBars.length}本)`,
+        })
+        await logDecision({
+          ticker: h.ticker, action: 'exit_skip_data_missing',
+          reason: fallbackReason, outcome: 'skipped',
+          ai_advice: { jquants_bars: bars.length, jquants_latest: latestBarDate, yahoo_bars: yahooBars.length },
+        })
+        continue
       }
+      // Yahoo bar の鮮度もチェック
+      const yahooLatest = yahooBars[yahooBars.length - 1]
+      const yahooDaysOld = Math.floor((Date.now() - new Date(yahooLatest.date).getTime()) / 86400000)
+      if (yahooDaysOld >= JQUANTS_STALE_DAYS_THRESHOLD) {
+        skippedStaleData.push({
+          ticker: h.ticker, name: h.name,
+          latestDate: `J-Quants ${latestBarDate ?? 'なし'} / Yahoo ${yahooLatest.date}`,
+          daysOld: Math.max(jqDaysOld === Infinity ? 999 : jqDaysOld, yahooDaysOld),
+        })
+        await logDecision({
+          ticker: h.ticker, action: 'exit_skip_stale_data',
+          reason: `両ソース鮮度不足 (Yahoo ${yahooDaysOld}日前)`,
+          ai_advice: { jquants_latest: latestBarDate, yahoo_latest: yahooLatest.date },
+          outcome: 'skipped',
+        })
+        continue
+      }
+      workingBars = yahooBars
+      dataSource = 'yahoo_fallback'
     }
 
     const pastBars = workingBars.slice(-20)
