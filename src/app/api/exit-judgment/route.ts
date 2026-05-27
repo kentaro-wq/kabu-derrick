@@ -18,6 +18,29 @@ import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { fetchOHLCVHistoryCached, getIdToken, isJQuantsConfigured } from '@/lib/jquants'
 import { fetchYahooBars } from '@/lib/stock-price'
+
+// decision_log への記録ヘルパー
+// 全 AI判定・全スキップを永続化することで、再現性検証と事後分析を可能にする
+async function logDecision(params: {
+  ticker: string | null
+  action: string
+  reason?: string
+  ai_advice?: Record<string, unknown>
+  outcome?: string
+}) {
+  try {
+    await adminSupabase.from('decision_log').insert({
+      log_date: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      ticker: params.ticker,
+      action: params.action,
+      reason: params.reason ?? null,
+      ai_advice: params.ai_advice ?? null,
+      outcome: params.outcome ?? null,
+    })
+  } catch (e) {
+    console.error('[decision_log] insert failed:', e)
+  }
+}
 import {
   classifySegment, calcVolatility, checkStrategyTrigger,
   strategyLabel, type ExitStrategy,
@@ -284,9 +307,11 @@ export async function POST() {
 
   for (const h of holdings) {
     if (!h.current_price || !h.purchase_price) {
-      skippedDataMissing.push({
-        ticker: h.ticker, name: h.name,
-        reason: !h.current_price ? 'current_price 未取得' : 'purchase_price 未設定',
+      const reason = !h.current_price ? 'current_price 未取得' : 'purchase_price 未設定'
+      skippedDataMissing.push({ ticker: h.ticker, name: h.name, reason })
+      await logDecision({
+        ticker: h.ticker, action: 'exit_skip_data_missing',
+        reason, outcome: 'skipped',
       })
       continue
     }
@@ -298,9 +323,11 @@ export async function POST() {
 
     const bars = await fetchOHLCVHistoryCached(h.ticker, 60, idToken)
     if (bars.length < 25) {
-      skippedDataMissing.push({
-        ticker: h.ticker, name: h.name,
-        reason: `J-Quants bars 不足 (${bars.length}本/25本必要)`,
+      const reason = `J-Quants bars 不足 (${bars.length}本/25本必要)`
+      skippedDataMissing.push({ ticker: h.ticker, name: h.name, reason })
+      await logDecision({
+        ticker: h.ticker, action: 'exit_skip_data_missing',
+        reason, outcome: 'skipped',
       })
       continue
     }
@@ -323,6 +350,12 @@ export async function POST() {
             latestDate: latestBarDate,
             daysOld,
           })
+          await logDecision({
+            ticker: h.ticker, action: 'exit_skip_stale_data',
+            reason: `J-Quants ${latestBarDate} (${daysOld}日前), Yahoo bars 不足(${yahooBars.length})`,
+            ai_advice: { jquants_latest: latestBarDate, jquants_days_old: daysOld, yahoo_bars: yahooBars.length },
+            outcome: 'skipped',
+          })
           continue
         }
         // Yahoo bar の鮮度もチェック
@@ -333,6 +366,12 @@ export async function POST() {
             ticker: h.ticker, name: h.name,
             latestDate: `J-Quants ${latestBarDate} / Yahoo ${yahooLatest.date}`,
             daysOld: Math.max(daysOld, yahooDaysOld),
+          })
+          await logDecision({
+            ticker: h.ticker, action: 'exit_skip_stale_data',
+            reason: `両ソース古い (J-Quants ${daysOld}日前, Yahoo ${yahooDaysOld}日前)`,
+            ai_advice: { jquants_latest: latestBarDate, yahoo_latest: yahooLatest.date },
+            outcome: 'skipped',
           })
           continue
         }
@@ -354,12 +393,19 @@ export async function POST() {
     if (dataSource === 'jquants' && yahooPrice > 0 && latestPrice > 0) {
       const divergencePct = Math.abs((latestPrice - yahooPrice) / yahooPrice) * 100
       if (divergencePct >= PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT) {
+        const divPct = Math.round(divergencePct * 10) / 10
         skippedDivergences.push({
           ticker: h.ticker,
           name: h.name,
           jquantsPrice: latestPrice,
           yahooPrice,
-          divergencePct: Math.round(divergencePct * 10) / 10,
+          divergencePct: divPct,
+        })
+        await logDecision({
+          ticker: h.ticker, action: 'exit_skip_divergence',
+          reason: `J-Quants ${latestPrice}円 vs Yahoo ${yahooPrice}円 (${divPct}%)`,
+          ai_advice: { jquants_price: latestPrice, yahoo_price: yahooPrice, divergence_pct: divPct },
+          outcome: 'skipped',
         })
         continue // 判定スキップ：誤判定リスクが大きすぎる
       }
@@ -445,6 +491,33 @@ export async function POST() {
       reasoning,
       risk_factors: aiConfirm ? null : `セグメント:${segment.label}/戦略:${strategyLabel(segment.recommendedStrategy)}/source:${dataSource}`,
       expected_action_within_days: decision === 'hold' ? 7 : 0,
+    })
+
+    // decision_log: 全判定を永続化（後の再現性検証・パターン分析に使う）
+    await logDecision({
+      ticker: h.ticker,
+      action: aiConfirm ? 'exit_ai_judgment' :
+              trigger.shouldExit && trigger.triggerType === 'cut_loss' ? 'exit_mechanical_cut' :
+              trigger.shouldExit ? 'exit_trigger_no_ai' : 'exit_hold_no_trigger',
+      reason: trigger.reason,
+      ai_advice: {
+        data_source: dataSource,
+        segment: segment.label,
+        strategy: strategyLabel(segment.recommendedStrategy),
+        gain_pct: Math.round(gainPct * 100) / 100,
+        days_held: daysHeld,
+        current_price: current,
+        purchase_price: Number(h.purchase_price),
+        indicators: {
+          rsi14: ind.rsi14,
+          ma5: ind.ma5,
+          ma25: ind.ma25,
+          volume_ratio: ind.volumeRatio,
+          today_change_pct: ind.todayChangePct,
+        },
+        ...(aiConfirm ? { ai_confidence: aiConfirm.confidence, ai_reasoning: aiConfirm.reasoning } : {}),
+      },
+      outcome: decision,
     })
 
     results.push({
