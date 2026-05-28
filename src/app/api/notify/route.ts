@@ -94,12 +94,35 @@ async function earningsCalendar(): Promise<string[]> {
   return reminders
 }
 
-// ── 朝通知: 注文期限 + 配当 + 決算リマインダー ─────────────────────────
+// ── 集中度警告: 自由売買口座で 30%/40% 超の銘柄を抽出 ─────────────────
+async function concentrationWarnings(): Promise<string[]> {
+  const { data: holdings } = await adminSupabase.from('holdings').select('ticker, name, evaluation_amount, account_type')
+  if (!holdings) return []
+  // 持株会・積立NISAは即売却不可なので分母から除外
+  const free = holdings.filter(h => ['nisa_growth', 'tokutei'].includes(h.account_type))
+  const total = free.reduce((s, h) => s + Number(h.evaluation_amount ?? 0), 0)
+  if (total <= 0) return []
+  const warnings: string[] = []
+  for (const h of free) {
+    const evalAmt = Number(h.evaluation_amount ?? 0)
+    if (evalAmt <= 0) continue
+    const pct = (evalAmt / total) * 100
+    if (pct >= 40) {
+      warnings.push(`🔴 ${h.name}(${h.ticker}) 集中度 ${pct.toFixed(1)}% 過大 — 利確で分散を進めるべき`)
+    } else if (pct >= 30) {
+      warnings.push(`⚠️ ${h.name}(${h.ticker}) 集中度 ${pct.toFixed(1)}% 高 — 新規買付禁止・利確機会は逃さない`)
+    }
+  }
+  return warnings
+}
+
+// ── 朝通知: 注文期限 + 配当 + 決算 + 集中度リマインダー ─────────────────
 async function morningCheck(): Promise<string | null> {
-  const [orderRes, divResult, earningsReminders] = await Promise.all([
+  const [orderRes, divResult, earningsReminders, concentrationAlerts] = await Promise.all([
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     dividendCalendar(),
     earningsCalendar(),
+    concentrationWarnings(),
   ])
 
   const urgent = (orderRes.data ?? []).filter(o => {
@@ -109,10 +132,16 @@ async function morningCheck(): Promise<string | null> {
   })
 
   // 何もなければ通知スキップ
-  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0) return null
+  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0 && concentrationAlerts.length === 0) return null
 
   const dateLabel = jstDateLabel(jstNow())
   let msg = `🌅 朝レポート｜${dateLabel}\n\n`
+
+  if (concentrationAlerts.length > 0) {
+    msg += `📊 ポートフォリオ集中度警告\n`
+    concentrationAlerts.forEach(w => { msg += `${w}\n` })
+    msg += `\n`
+  }
 
   if (urgent.length > 0) {
     msg += `⏰ 注文期限アラート\n`
