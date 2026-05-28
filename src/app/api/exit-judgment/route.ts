@@ -79,6 +79,13 @@ interface NisaContext {
   slotUsedPct: number
 }
 
+/** ポートフォリオ集中度コンテキスト */
+interface ConcentrationContext {
+  sharePct: number          // この銘柄が自由売買口座全体に占める比率(%)
+  totalEvalYen: number      // 自由売買口座の評価額合計
+  thisEvalYen: number       // この銘柄の評価額
+}
+
 /** AI 確認プロンプト
  *  triggerType に応じてプロンプトを変える:
  *   - 'cut_loss': 損切確認（簡素）
@@ -104,6 +111,7 @@ async function askAIForConfirmation(
   nisa: NisaContext,
   current: number,  // J-Quants最新終値
   dividend: DividendInfo | null,
+  concentration: ConcentrationContext,
 ): Promise<AIOverride> {
   const techSummary = [
     indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
@@ -140,6 +148,15 @@ async function askAIForConfirmation(
 - 売却判断には「キャピタル損益 + 想定配当収入」を総合評価\n`
     : ''
 
+  // 集中度セクション
+  // 単一銘柄への集中はリスク。30%超は分散原則に反する。
+  // 利確判断ではむしろ集中度を下げる方向に評価したい。
+  // 損切判断では集中度高は塩漬けリスクを高めるので早めの対応が合理的。
+  const concentrationBlock = `\n【📊 ポートフォリオ集中度】
+- この銘柄: 評価額${concentration.thisEvalYen.toLocaleString()}円 / 自由売買口座全体${concentration.totalEvalYen.toLocaleString()}円
+- 占有率: ${concentration.sharePct.toFixed(1)}%
+- ${concentration.sharePct >= 40 ? '🔴 集中度過大: 単一銘柄が40%超。利確で分散を進めるべき。損切も躊躇しない' : concentration.sharePct >= 30 ? '⚠️ 集中度高: 30%超。新規買付禁止。利確機会は逃さない' : concentration.sharePct >= 20 ? '中庸: 20%超。バランス意識' : '低集中: 通常判断'}\n`
+
   // 第一防衛線損切判定の専用プロンプト
   const lossPrompt = `あなたは含み損銘柄の「損切すべきか持続すべきか」を判断する冷静なトレーダーです。
 
@@ -150,7 +167,7 @@ async function askAIForConfirmation(
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}${dividendBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}
 ---
 
 判断の本質 (利益最大化視点):
@@ -198,7 +215,7 @@ JSON のみ:
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}${dividendBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}
 ---
 判断指針:
 
@@ -238,7 +255,7 @@ JSON のみで回答:
 【セグメント】${segmentLabel}
 【推奨戦略】${strategyLabel(strategy)}
 【発動した売却トリガー】${triggerReason}
-${nisaBlock}${dividendBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}
 文脈で見て売らない方が良い場合もあります。
 JSON のみで回答:
 {
@@ -295,6 +312,12 @@ export async function POST() {
   const nisaSlotRemaining = Math.max(0, nisaLimit - nisaUsed)
   const nisaSlotUsedPct = Math.round((nisaUsed / nisaLimit) * 100)
   const monthsLeftInYear = Math.max(0, 12 - new Date().getMonth() - 1)
+
+  // === ポートフォリオ集中度計算（AI判定に注入） ===
+  // 自由売買口座（nisa_growth + tokutei）の評価額合計で各銘柄の占有率を出す。
+  // 持株会や積立NISAは即売却不可なので分母から除外。
+  // 30%超は分散リスク、40%超は緊急レベルとしてAIに伝える。
+  const totalTradableEval = holdings.reduce((s, h) => s + (Number(h.current_price ?? 0) * Number(h.quantity ?? 0)), 0)
 
   const results: Array<{
     ticker: string; name: string; segment: string; strategy: string;
@@ -451,6 +474,11 @@ export async function POST() {
         // 配当情報を取得（AI判定に総合リターン視点で組込み）
         // 失敗時は null で AI に渡す（プロンプト側で空セクション化）
         const dividend = await fetchDividendInfo(h.ticker)
+
+        // 集中度計算: この銘柄の評価額 / 自由売買口座全体
+        const thisEval = current * Number(h.quantity)
+        const sharePct = totalTradableEval > 0 ? (thisEval / totalTradableEval) * 100 : 0
+
         // 利確・時間切れ・モメンタム判定は AI に最終確認
         aiConfirm = await askAIForConfirmation(
           h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
@@ -471,6 +499,11 @@ export async function POST() {
           },
           current,
           dividend,
+          {
+            sharePct,
+            totalEvalYen: Math.round(totalTradableEval),
+            thisEvalYen: Math.round(thisEval),
+          },
         )
         decision = aiConfirm.decision
         confidence = aiConfirm.confidence
