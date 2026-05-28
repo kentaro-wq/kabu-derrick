@@ -150,12 +150,56 @@ async function fetchNikkeiFuture(): Promise<{ price: number; prevClose: number; 
   return null
 }
 
+// 日本株主要銘柄 → 米国上場ADR のマッピング
+// ADR は米国時間で取引されるため、米国引け値が翌朝の日本市場の予兆になる
+// 出典: Yahoo Finance / SBI証券国際ADR一覧
+const ADR_MAP: Record<string, { adr: string; name: string }> = {
+  '7203': { adr: 'TM',    name: 'トヨタ' },
+  '7267': { adr: 'HMC',   name: 'ホンダ' },
+  '8001': { adr: 'ITOCY', name: '伊藤忠' },
+  '8002': { adr: 'MARUY', name: '丸紅' },
+  '8031': { adr: 'MITSY', name: '三井物産' },
+  '8053': { adr: 'SSUMY', name: '住友商事' },
+  '8058': { adr: 'MSBHY', name: '三菱商事' },
+  '8306': { adr: 'MUFG',  name: '三菱UFJ' },
+  '8316': { adr: 'SMFG',  name: '三井住友FG' },
+  '8411': { adr: 'MFG',   name: 'みずほFG' },
+  '8766': { adr: 'TKOMY', name: '東京海上HD' },
+  '6758': { adr: 'SONY',  name: 'ソニー' },
+  '6861': { adr: 'KYCCF', name: 'キーエンス' },
+}
+
+// 保有銘柄の ADR を取得して当日米株引け値からの変動を取得
+async function fetchHoldingADRs(): Promise<Array<{
+  ticker: string; name: string; adrSymbol: string; price: number; changePct: number
+}>> {
+  try {
+    const { createClient } = await import('@supabase/supabase-js')
+    const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+    const { data: holdings } = await sb.from('holdings').select('ticker, name')
+    const candidates = (holdings ?? []).filter(h => ADR_MAP[h.ticker])
+    if (candidates.length === 0) return []
+
+    const results = await Promise.all(
+      candidates.map(async h => {
+        const adr = ADR_MAP[h.ticker]
+        const data = await fetchIndex(adr.adr)
+        return data ? { ticker: h.ticker, name: h.name, adrSymbol: adr.adr, price: data.price, changePct: data.changePct } : null
+      })
+    )
+    return results.filter((r): r is NonNullable<typeof r> => r !== null)
+  } catch {
+    return []
+  }
+}
+
 async function runOvernight() {
-  const [sp500, nasdaq, dow, n225fut] = await Promise.all([
+  const [sp500, nasdaq, dow, n225fut, adrs] = await Promise.all([
     fetchIndex('^GSPC'),  // S&P500
     fetchIndex('^IXIC'),  // NASDAQ
     fetchIndex('^DJI'),   // ダウ
     fetchNikkeiFuture(),  // CME日経225先物（複数シンボルフォールバック）
+    fetchHoldingADRs(),   // 保有銘柄のADR (米国引け値)
   ])
 
   // 寄り付きギャップの予測は「日経先物」を最重要視
@@ -214,6 +258,16 @@ async function runOvernight() {
     '・NISA枠の売却は枠の翌年復活なし。ギャップだけで判断しない',
   ].join('\n')
 
+  // 保有銘柄ADR セクション (大きく動いた銘柄のみ表示)
+  const adrLines = adrs
+    .filter(a => Math.abs(a.changePct) >= 1)
+    .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
+    .map(a => `${a.changePct >= 0 ? '🟢' : '🔴'} ${a.name}(${a.ticker}) ADR ${a.adrSymbol}: ${a.changePct >= 0 ? '+' : ''}${a.changePct.toFixed(2)}%`)
+
+  const adrSection = adrLines.length > 0
+    ? `\n【保有銘柄ADR (米国引け)】\n${adrLines.join('\n')}\n`
+    : ''
+
   const lineMsg = [
     `${icon} マイ株デリック ${headline}`,
     today,
@@ -221,9 +275,10 @@ async function runOvernight() {
     `【先物・米市場】`,
     futLine ?? '日経先物: 取得失敗',
     usLine || '米市場: 取得失敗',
+    adrSection.trim(),
     '',
     guidance,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 
   await sendLineMessage(lineMsg)
 
