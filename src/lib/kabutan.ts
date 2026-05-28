@@ -378,6 +378,61 @@ export async function fetchGainRankings(market = '1'): Promise<GainRankingItem[]
   }
 }
 
+/**
+ * 直近の決算発表日と次回決算予測を取得
+ * Kabutan finance ページから「発表日」列をスクレイピングし、
+ * 直近の四半期発表日 + 3ヶ月 を次回発表日として推定。
+ */
+export async function fetchEarningsInfo(ticker: string): Promise<{
+  lastAnnounced: string
+  nextEstimated: string
+  daysToNext: number
+} | null> {
+  try {
+    const res = await fetch(`https://kabutan.jp/stock/finance?code=${ticker}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return null
+    const html = await res.text()
+    const $ = cheerio.load(html)
+
+    // 「発表日」列を含むテーブルから日付を抽出
+    const allDates: string[] = []
+    $('table').each((_, tbl) => {
+      const headers = $(tbl).find('thead th, tr:first-child th').map((_, th) => $(th).text().trim()).get()
+      if (!headers.includes('発表日')) return
+      // 全セルから "YY/MM/DD" パターンを正規表現で抽出 (列位置に依存しない)
+      $(tbl).find('tbody tr td').each((_, td) => {
+        const txt = $(td).text().trim()
+        const m = txt.match(/^(\d{2})\/(\d{2})\/(\d{2})$/)
+        if (m) {
+          const year = parseInt(m[1]) + 2000
+          allDates.push(`${year}-${m[2]}-${m[3]}`)
+        }
+      })
+    })
+
+    if (allDates.length === 0) return null
+    const sorted = allDates.sort()
+    const lastAnnounced = sorted[sorted.length - 1]
+    const lastDate = new Date(lastAnnounced)
+    if (isNaN(lastDate.getTime())) return null
+
+    const nextDate = new Date(lastDate)
+    nextDate.setMonth(nextDate.getMonth() + 3)
+    const today = new Date()
+    while (nextDate < today) {
+      nextDate.setMonth(nextDate.getMonth() + 3)
+    }
+    const nextEstimated = nextDate.toISOString().slice(0, 10)
+    const daysToNext = Math.round((nextDate.getTime() - today.getTime()) / 86400000)
+    return { lastAnnounced, nextEstimated, daysToNext }
+  } catch {
+    return null
+  }
+}
+
 // 市場全体の統計を取得
 export async function fetchMarketStats() {
   try {

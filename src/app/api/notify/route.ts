@@ -9,6 +9,7 @@ import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
 import { getNisaStatus } from '@/lib/nisa'
 import { fetchDividendInfo } from '@/lib/stock-price'
+import { fetchEarningsInfo } from '@/lib/kabutan'
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
 
@@ -72,11 +73,33 @@ async function dividendCalendar(): Promise<{
   return { reminders, annualForecastYen: Math.round(annualForecastYen) }
 }
 
-// ── 朝通知: 今日・明日が期限の注文 + 配当リマインダー ─────────────────
+// ── 決算カレンダー: 次回決算発表が14日以内の銘柄を抽出 ─────────────────
+async function earningsCalendar(): Promise<string[]> {
+  const { data: holdings } = await adminSupabase.from('holdings').select('ticker, name')
+  if (!holdings) return []
+  const targets = holdings.filter(h => /^\d{4}$/.test(h.ticker ?? ''))
+
+  const infos = await Promise.all(
+    targets.map(async h => ({ h, info: await fetchEarningsInfo(h.ticker) }))
+  )
+  const reminders: string[] = []
+  for (const { h, info } of infos) {
+    if (!info) continue
+    if (info.daysToNext >= 0 && info.daysToNext <= 14) {
+      reminders.push(
+        `📢 ${h.name}(${h.ticker}) 次回決算推定: ${info.nextEstimated} (あと${info.daysToNext}日)\n  値動き急変に注意。発表前後の急な売買判断は避ける`
+      )
+    }
+  }
+  return reminders
+}
+
+// ── 朝通知: 注文期限 + 配当 + 決算リマインダー ─────────────────────────
 async function morningCheck(): Promise<string | null> {
-  const [orderRes, divResult] = await Promise.all([
+  const [orderRes, divResult, earningsReminders] = await Promise.all([
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     dividendCalendar(),
+    earningsCalendar(),
   ])
 
   const urgent = (orderRes.data ?? []).filter(o => {
@@ -85,8 +108,8 @@ async function morningCheck(): Promise<string | null> {
     return days >= 0 && days <= 1
   })
 
-  // 注文期限なし AND 配当リマインダーなし → 通知不要
-  if (urgent.length === 0 && divResult.reminders.length === 0) return null
+  // 何もなければ通知スキップ
+  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0) return null
 
   const dateLabel = jstDateLabel(jstNow())
   let msg = `🌅 朝レポート｜${dateLabel}\n\n`
@@ -99,6 +122,12 @@ async function morningCheck(): Promise<string | null> {
       msg += `${days === 0 ? '🔴 今日が期限' : '🟡 明日が期限'}\n`
       msg += `${o.name} ${typeLabel}指値 ${Number(o.price).toLocaleString()}円 × ${o.quantity}株\n\n`
     })
+  }
+
+  if (earningsReminders.length > 0) {
+    msg += `📢 決算発表リマインダー (14日以内)\n`
+    earningsReminders.forEach(r => { msg += `${r}\n` })
+    msg += `\n`
   }
 
   if (divResult.reminders.length > 0) {
