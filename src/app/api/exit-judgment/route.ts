@@ -21,6 +21,7 @@ import { fetchYahooBars, fetchDividendInfo, type DividendInfo } from '@/lib/stoc
 
 // decision_log への記録ヘルパー
 // 全 AI判定・全スキップを永続化することで、再現性検証と事後分析を可能にする
+// 重複防止: 同日・同ticker・同actionが既にあればスキップ (cronの多重起動対策)
 async function logDecision(params: {
   ticker: string | null
   action: string
@@ -29,8 +30,19 @@ async function logDecision(params: {
   outcome?: string
 }) {
   try {
+    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    // 同日・同ticker・同action の重複チェック
+    if (params.ticker) {
+      const { data: existing } = await adminSupabase
+        .from('decision_log').select('id')
+        .eq('log_date', today)
+        .eq('ticker', params.ticker)
+        .eq('action', params.action)
+        .limit(1)
+      if (existing && existing.length > 0) return
+    }
     await adminSupabase.from('decision_log').insert({
-      log_date: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      log_date: today,
       ticker: params.ticker,
       action: params.action,
       reason: params.reason ?? null,
@@ -341,6 +353,13 @@ export async function POST() {
   const JQUANTS_STALE_DAYS_THRESHOLD = 5
 
   for (const h of holdings) {
+    // 既存チェック (最優先): 同日に既に判定済みなら全スキップ
+    // cron の多重起動でも判定が二重実行されないようにする
+    const { data: existing } = await adminSupabase
+      .from('exit_judgments').select('id')
+      .eq('ticker', h.ticker).eq('judgment_date', today).limit(1)
+    if (existing && existing.length > 0) continue  // 同日既存はスキップが正常動作
+
     if (!h.current_price || !h.purchase_price) {
       const reason = !h.current_price ? 'current_price 未取得' : 'purchase_price 未設定'
       skippedDataMissing.push({ ticker: h.ticker, name: h.name, reason })
@@ -350,11 +369,6 @@ export async function POST() {
       })
       continue
     }
-
-    const { data: existing } = await adminSupabase
-      .from('exit_judgments').select('id')
-      .eq('ticker', h.ticker).eq('judgment_date', today).limit(1)
-    if (existing && existing.length > 0) continue  // 同日既存はスキップが正常動作
 
     const bars = await fetchOHLCVHistoryCached(h.ticker, 60, idToken)
 
