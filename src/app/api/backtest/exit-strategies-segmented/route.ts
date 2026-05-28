@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import type { OHLCVBar } from '@/lib/technicals'
+import { fetchYahooBars } from '@/lib/stock-price'
 
 export const maxDuration = 60
 
@@ -127,7 +128,9 @@ export async function GET() {
     return NextResponse.json({ message: 'no fired signals' })
   }
 
-  // OHLCV キャッシュ一括取得
+  // OHLCV キャッシュ一括取得 + Yahoo フォールバック
+  // J-Quants Free プランは12週間遅延でバックテスト用銘柄はキャッシュにない場合が多い
+  // → Yahoo Finance から直接取得する
   const tickers = [...new Set(signals.map(s => s.ticker))]
   const { data: cacheRows } = await adminSupabase
     .from('jquants_ohlcv_cache')
@@ -135,6 +138,26 @@ export async function GET() {
     .in('ticker', tickers)
   const barsMap = new Map<string, OHLCVBar[]>()
   for (const r of cacheRows ?? []) barsMap.set(r.ticker, r.bars as OHLCVBar[])
+
+  // キャッシュに無い銘柄を Yahoo から並列取得 (5並列)
+  const missingTickers = tickers.filter(t => !barsMap.has(t))
+  if (missingTickers.length > 0) {
+    const PARALLEL = 5
+    for (let i = 0; i < missingTickers.length; i += PARALLEL) {
+      const batch = missingTickers.slice(i, i + PARALLEL)
+      const results = await Promise.all(
+        batch.map(async ticker => {
+          // Yahoo bars には AdjC が無いので株式分割銘柄は注意。
+          // バックテスト用途では各シグナル日近辺の連続性が大事なので close を使う
+          const bars = await fetchYahooBars(ticker, '1y')
+          return { ticker, bars: bars as OHLCVBar[] }
+        })
+      )
+      for (const { ticker, bars } of results) {
+        if (bars.length > 0) barsMap.set(ticker, bars)
+      }
+    }
+  }
 
   // 各 signal を SignalCase に変換しつつセグメント分類
   const cases: SignalCase[] = []
