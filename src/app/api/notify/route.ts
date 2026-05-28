@@ -8,6 +8,7 @@ import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
 import { getNisaStatus } from '@/lib/nisa'
+import { fetchDividendInfo } from '@/lib/stock-price'
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
 
@@ -27,28 +28,88 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - jst.getTime()) / (1000 * 60 * 60 * 24))
 }
 
-// ── 朝通知: 今日・明日が期限の注文のみ ─────────────────────────────
-async function morningCheck(): Promise<string | null> {
-  const { data: orders } = await adminSupabase
-    .from('orders').select('*').eq('status', 'active')
+// ── 配当カレンダー: 権利確定日が30日以内の銘柄を抽出 ─────────────────
+// Yahoo の dividend events は「過去の権利確定日」を返すため、
+// 日本株の半期周期（3月/9月決算が多い）を使って次回権利日を推定。
+async function dividendCalendar(): Promise<{
+  reminders: string[]; annualForecastYen: number
+}> {
+  const { data: holdings } = await adminSupabase.from('holdings').select('ticker, name, quantity')
+  if (!holdings) return { reminders: [], annualForecastYen: 0 }
+  const targets = holdings.filter(h => /^\d{4}$/.test(h.ticker ?? ''))
 
-  const urgent = (orders ?? []).filter(o => {
+  const dividendInfos = await Promise.all(
+    targets.map(async h => ({ h, info: await fetchDividendInfo(h.ticker) }))
+  )
+
+  const reminders: string[] = []
+  let annualForecastYen = 0
+  const today = jstNow()
+  today.setUTCHours(0, 0, 0, 0)
+
+  for (const { h, info } of dividendInfos) {
+    if (!info || info.annualDividend <= 0) continue
+    const qty = Number(h.quantity ?? 0)
+    if (qty > 0) annualForecastYen += info.annualDividend * qty
+
+    // 次回権利日推定 (直近 + 6ヶ月)。過ぎていれば 12ヶ月後で再評価
+    const lastEx = new Date(info.lastExDate)
+    lastEx.setUTCHours(0, 0, 0, 0)
+    const nextEx = new Date(lastEx)
+    nextEx.setUTCMonth(nextEx.getUTCMonth() + 6)
+    if (nextEx.getTime() < today.getTime()) {
+      nextEx.setUTCMonth(nextEx.getUTCMonth() + 6) // 1年後
+    }
+    const daysToNext = Math.round((nextEx.getTime() - today.getTime()) / 86400000)
+
+    if (daysToNext >= 0 && daysToNext <= 30) {
+      const expected = info.annualDividend * 0.5 * qty // 半期想定
+      reminders.push(
+        `📅 ${h.name}(${h.ticker}) 権利確定日推定: ${nextEx.toISOString().slice(0, 10)} (あと${daysToNext}日)\n  推定受取: ${Math.round(expected).toLocaleString()}円 (利回り${info.yieldPct}%)`
+      )
+    }
+  }
+  return { reminders, annualForecastYen: Math.round(annualForecastYen) }
+}
+
+// ── 朝通知: 今日・明日が期限の注文 + 配当リマインダー ─────────────────
+async function morningCheck(): Promise<string | null> {
+  const [orderRes, divResult] = await Promise.all([
+    adminSupabase.from('orders').select('*').eq('status', 'active'),
+    dividendCalendar(),
+  ])
+
+  const urgent = (orderRes.data ?? []).filter(o => {
     if (!o.deadline) return false
     const days = daysUntil(o.deadline)
     return days >= 0 && days <= 1
   })
 
-  if (urgent.length === 0) return null
+  // 注文期限なし AND 配当リマインダーなし → 通知不要
+  if (urgent.length === 0 && divResult.reminders.length === 0) return null
 
   const dateLabel = jstDateLabel(jstNow())
-  let msg = `⏰ 注文期限アラート｜${dateLabel}\n\n`
-  urgent.forEach(o => {
-    const days = daysUntil(o.deadline!)
-    const typeLabel = o.order_type === 'sell' ? '売り' : '買い'
-    msg += `${days === 0 ? '🔴 今日が期限' : '🟡 明日が期限'}\n`
-    msg += `${o.name} ${typeLabel}指値 ${Number(o.price).toLocaleString()}円 × ${o.quantity}株\n\n`
-  })
-  msg += `約定しない場合は延長またはキャンセルを。`
+  let msg = `🌅 朝レポート｜${dateLabel}\n\n`
+
+  if (urgent.length > 0) {
+    msg += `⏰ 注文期限アラート\n`
+    urgent.forEach(o => {
+      const days = daysUntil(o.deadline!)
+      const typeLabel = o.order_type === 'sell' ? '売り' : '買い'
+      msg += `${days === 0 ? '🔴 今日が期限' : '🟡 明日が期限'}\n`
+      msg += `${o.name} ${typeLabel}指値 ${Number(o.price).toLocaleString()}円 × ${o.quantity}株\n\n`
+    })
+  }
+
+  if (divResult.reminders.length > 0) {
+    msg += `💰 配当権利日リマインダー (30日以内)\n`
+    divResult.reminders.forEach(r => { msg += `${r}\n` })
+    if (divResult.annualForecastYen > 0) {
+      msg += `\n年間配当予測合計: ${divResult.annualForecastYen.toLocaleString()}円\n`
+    }
+  }
+
+  if (urgent.length > 0) msg += `\n約定しない場合は延長またはキャンセルを。`
   return msg
 }
 
