@@ -173,6 +173,64 @@ async function eveningCheck(): Promise<string | null> {
   return msg
 }
 
+// ── 月次パフォーマンスサマリー: 月初1日に当月実績 + 年初来累積を通知 ─────
+async function monthlyCheck(): Promise<string | null> {
+  const now = jstNow()
+  const currentYear = now.getUTCFullYear()
+  const currentMonth = now.getUTCMonth() + 1
+  // 「先月分」のサマリーを月初に出す
+  const targetYear = currentMonth === 1 ? currentYear - 1 : currentYear
+  const targetMonth = currentMonth === 1 ? 12 : currentMonth - 1
+  const monthStart = `${targetYear}-${String(targetMonth).padStart(2, '0')}-01`
+  const monthEnd = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${new Date(targetYear, targetMonth, 0).getDate()}`
+  const yearStart = `${currentYear}-01-01`
+
+  const [holdingsRes, monthRealizedRes, ytdRealizedRes, profileRes] = await Promise.all([
+    adminSupabase.from('holdings').select('*'),
+    adminSupabase.from('realized_trades').select('*').gte('sell_date', monthStart).lte('sell_date', monthEnd),
+    adminSupabase.from('realized_trades').select('*').gte('sell_date', yearStart),
+    adminSupabase.from('profile').select('*').single(),
+  ])
+
+  const holdings = holdingsRes.data ?? []
+  const monthRealized = monthRealizedRes.data ?? []
+  const ytdRealized = ytdRealizedRes.data ?? []
+  const profile = profileRes.data
+
+  const realizedGainOf = (t: { realized_gain: number | null; sell_price: number; buy_price: number | null; quantity: number }): number =>
+    t.realized_gain != null ? Number(t.realized_gain)
+      : (t.buy_price != null ? (t.sell_price - t.buy_price) * t.quantity : 0)
+
+  const monthRealizedSum = monthRealized.reduce((s, t) => s + realizedGainOf(t), 0)
+  const ytdRealizedSum = ytdRealized.reduce((s, t) => s + realizedGainOf(t), 0)
+  const totalEval = holdings.reduce((s, h) => s + Number(h.evaluation_amount ?? 0), 0)
+  const totalUnrealized = holdings.reduce((s, h) => s + Number(h.unrealized_gain ?? 0), 0)
+  const totalAssets = totalEval + Number(profile?.bank_balance ?? 0) + Number(profile?.dc_balance ?? 0)
+
+  const sign = (n: number) => n >= 0 ? '+' : ''
+
+  let msg = `📈 マイ株デリック 月次サマリー (${targetYear}年${targetMonth}月)\n\n`
+  msg += `【先月の実績】\n`
+  msg += `・実現損益: ${sign(monthRealizedSum)}${Math.round(monthRealizedSum).toLocaleString()}円\n`
+  msg += `・売却件数: ${monthRealized.length}件\n\n`
+  msg += `【年初来累積】\n`
+  msg += `・実現損益: ${sign(ytdRealizedSum)}${Math.round(ytdRealizedSum).toLocaleString()}円\n`
+  msg += `・取引件数: ${ytdRealized.length}件\n\n`
+  msg += `【現状】\n`
+  msg += `・総資産: ${Math.round(totalAssets).toLocaleString()}円\n`
+  msg += `・評価額: ${Math.round(totalEval).toLocaleString()}円\n`
+  msg += `・含み損益: ${sign(totalUnrealized)}${Math.round(totalUnrealized).toLocaleString()}円\n`
+
+  if (profile?.target_amount) {
+    const target = Number(profile.target_amount)
+    const progressPct = (totalAssets / target) * 100
+    msg += `\n【目標進捗】\n`
+    msg += `・目標 ${Math.round(target / 10000)}万円 / 進捗 ${progressPct.toFixed(1)}%\n`
+  }
+
+  return msg
+}
+
 // ── ハンドラ ─────────────────────────────────────────────────────────
 async function handler(req: Request) {
   const isGet = req.method === 'GET'
@@ -196,7 +254,9 @@ async function handler(req: Request) {
     }).catch(e => console.error('[notify/morning] exit-judgment trigger failed:', e))
   }
 
-  const message = type === 'morning' ? await morningCheck() : await eveningCheck()
+  const message = type === 'morning' ? await morningCheck()
+    : type === 'monthly' ? await monthlyCheck()
+    : await eveningCheck()
 
   if (!message) {
     return NextResponse.json({ success: false, skipped: true, type, reason: '通知条件なし' })

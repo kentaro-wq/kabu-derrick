@@ -17,6 +17,10 @@
       "schedule": "0 23 * * 0"
     },
     {
+      "path": "/api/notify?type=monthly",
+      "schedule": "30 23 1 * *"
+    },
+    {
       "path": "/api/notify?type=evening",
       "schedule": "45 6 * * 1-5"
     },
