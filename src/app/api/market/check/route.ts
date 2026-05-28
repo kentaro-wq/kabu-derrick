@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sendLineMessage } from '@/lib/line'
+import { adminSupabase } from '@/lib/supabase'
 
 interface YahooChartMeta {
   regularMarketPrice: number
@@ -174,9 +175,7 @@ async function fetchHoldingADRs(): Promise<Array<{
   ticker: string; name: string; adrSymbol: string; price: number; changePct: number
 }>> {
   try {
-    const { createClient } = await import('@supabase/supabase-js')
-    const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-    const { data: holdings } = await sb.from('holdings').select('ticker, name')
+    const { data: holdings } = await adminSupabase.from('holdings').select('ticker, name')
     const candidates = (holdings ?? []).filter(h => ADR_MAP[h.ticker])
     if (candidates.length === 0) return []
 

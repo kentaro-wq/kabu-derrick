@@ -1,18 +1,27 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
-let _client: SupabaseClient | null = null
+let _adminClient: SupabaseClient | null = null
 
-function getClient() {
-  if (!_client) {
-    _client = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    )
+function getAdminClient(): SupabaseClient {
+  if (!_adminClient) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!url || !serviceKey) {
+      throw new Error(
+        'Supabase admin client requires NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'
+      )
+    }
+    _adminClient = createClient(url, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
   }
-  return _client
+  return _adminClient
 }
 
-// RLSに全許可ポリシーを設定済み（個人用アプリ）のためanonキーで統一
-export const adminSupabase = {
-  from: (table: string) => getClient().from(table),
-}
+export const adminSupabase: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getAdminClient()
+    const value = (client as unknown as Record<string | symbol, unknown>)[prop as string | symbol]
+    return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(client) : value
+  },
+})
