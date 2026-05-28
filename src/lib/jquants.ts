@@ -138,7 +138,11 @@ export async function fetchOHLCVHistory(
   if (!idToken) return []
 
   const code = toJQuantsCode(ticker)
-  // J-Quants Free プランは 12週間遅延データ。end_date を 100日前に設定して範囲内に収める
+  // J-Quants Free プランは「直近12週間を除く2年分」のみ取得可能 (約84日遅延)
+  // end_date を 100日前に設定して範囲内に収めるが、得られるのは常に最新-12週間以前のデータ
+  // → exit-judgment 等の現在価格を要する判定は Yahoo Finance フォールバックを使う設計
+  //   (src/app/api/exit-judgment/route.ts の fetchYahooBars 経由のフォールバック参照)
+  // 直近データが必要なら Light プラン (¥1,650/月) 以上への移行を検討
   const to = new Date()
   to.setDate(to.getDate() - 100)
   const from = new Date(to)
