@@ -95,34 +95,35 @@ async function earningsCalendar(): Promise<string[]> {
 }
 
 // ── 集中度警告: 自由売買口座で 30%/40% 超の銘柄を抽出 ─────────────────
-async function concentrationWarnings(): Promise<string[]> {
+// 集中度計算: 月次サマリー向けに上位銘柄の占有率を返す
+async function concentrationSummary(): Promise<string[]> {
   const { data: holdings } = await adminSupabase.from('holdings').select('ticker, name, evaluation_amount, account_type')
   if (!holdings) return []
   // 持株会・積立NISAは即売却不可なので分母から除外
   const free = holdings.filter(h => ['nisa_growth', 'tokutei'].includes(h.account_type))
   const total = free.reduce((s, h) => s + Number(h.evaluation_amount ?? 0), 0)
   if (total <= 0) return []
-  const warnings: string[] = []
-  for (const h of free) {
-    const evalAmt = Number(h.evaluation_amount ?? 0)
-    if (evalAmt <= 0) continue
-    const pct = (evalAmt / total) * 100
-    if (pct >= 40) {
-      warnings.push(`🔴 ${h.name}(${h.ticker}) 集中度 ${pct.toFixed(1)}% 過大 — 利確で分散を進めるべき`)
-    } else if (pct >= 30) {
-      warnings.push(`⚠️ ${h.name}(${h.ticker}) 集中度 ${pct.toFixed(1)}% 高 — 新規買付禁止・利確機会は逃さない`)
-    }
+  const lines: string[] = []
+  const items = free
+    .map(h => ({ h, pct: (Number(h.evaluation_amount ?? 0) / total) * 100 }))
+    .filter(x => x.pct > 0)
+    .sort((a, b) => b.pct - a.pct)
+  for (const { h, pct } of items.slice(0, 3)) {
+    const icon = pct >= 40 ? '🔴' : pct >= 30 ? '⚠️' : '🟢'
+    lines.push(`${icon} ${h.name}(${h.ticker}): ${pct.toFixed(1)}%`)
   }
-  return warnings
+  return lines
 }
 
-// ── 朝通知: 注文期限 + 配当 + 決算 + 集中度リマインダー ─────────────────
+// ── 朝通知: 注文期限 + 配当 + 決算 (集中度は月次に移動) ────────────────
+// 集中度は変動が遅く日次で通知してもアクション可能性が低いため、月次サマリーに集約。
+// AI 出口判定 (exit-judgment) の prompt には引き続き集中度が含まれるので、
+// 売買判断時には反映される。
 async function morningCheck(): Promise<string | null> {
-  const [orderRes, divResult, earningsReminders, concentrationAlerts] = await Promise.all([
+  const [orderRes, divResult, earningsReminders] = await Promise.all([
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     dividendCalendar(),
     earningsCalendar(),
-    concentrationWarnings(),
   ])
 
   const urgent = (orderRes.data ?? []).filter(o => {
@@ -132,16 +133,10 @@ async function morningCheck(): Promise<string | null> {
   })
 
   // 何もなければ通知スキップ
-  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0 && concentrationAlerts.length === 0) return null
+  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0) return null
 
   const dateLabel = jstDateLabel(jstNow())
   let msg = `🌅 朝レポート｜${dateLabel}\n\n`
-
-  if (concentrationAlerts.length > 0) {
-    msg += `📊 ポートフォリオ集中度警告\n`
-    concentrationAlerts.forEach(w => { msg += `${w}\n` })
-    msg += `\n`
-  }
 
   if (urgent.length > 0) {
     msg += `⏰ 注文期限アラート\n`
@@ -267,6 +262,8 @@ async function monthlyCheck(): Promise<string | null> {
 
   const sign = (n: number) => n >= 0 ? '+' : ''
 
+  const concentrationLines = await concentrationSummary()
+
   let msg = `📈 マイ株デリック 月次サマリー (${targetYear}年${targetMonth}月)\n\n`
   msg += `【先月の実績】\n`
   msg += `・実現損益: ${sign(monthRealizedSum)}${Math.round(monthRealizedSum).toLocaleString()}円\n`
@@ -278,6 +275,11 @@ async function monthlyCheck(): Promise<string | null> {
   msg += `・総資産: ${Math.round(totalAssets).toLocaleString()}円\n`
   msg += `・評価額: ${Math.round(totalEval).toLocaleString()}円\n`
   msg += `・含み損益: ${sign(totalUnrealized)}${Math.round(totalUnrealized).toLocaleString()}円\n`
+
+  if (concentrationLines.length > 0) {
+    msg += `\n【上位銘柄の占有率 (自由売買口座)】\n`
+    concentrationLines.forEach(l => { msg += `${l}\n` })
+  }
 
   if (profile?.target_amount) {
     const target = Number(profile.target_amount)
