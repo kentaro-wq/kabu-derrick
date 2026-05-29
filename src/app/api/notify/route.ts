@@ -238,17 +238,19 @@ async function monthlyCheck(): Promise<string | null> {
   const monthEnd = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${new Date(targetYear, targetMonth, 0).getDate()}`
   const yearStart = `${currentYear}-01-01`
 
-  const [holdingsRes, monthRealizedRes, ytdRealizedRes, profileRes] = await Promise.all([
+  const [holdingsRes, monthRealizedRes, ytdRealizedRes, profileRes, tsumitateRes] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
     adminSupabase.from('realized_trades').select('*').gte('sell_date', monthStart).lte('sell_date', monthEnd),
     adminSupabase.from('realized_trades').select('*').gte('sell_date', yearStart),
     adminSupabase.from('profile').select('*').single(),
+    adminSupabase.from('tsumitate_settings').select('*'),
   ])
 
   const holdings = holdingsRes.data ?? []
   const monthRealized = monthRealizedRes.data ?? []
   const ytdRealized = ytdRealizedRes.data ?? []
   const profile = profileRes.data
+  const tsumitateSettings = tsumitateRes.data ?? []
 
   const realizedGainOf = (t: { realized_gain: number | null; sell_price: number; buy_price: number | null; quantity: number }): number =>
     t.realized_gain != null ? Number(t.realized_gain)
@@ -279,6 +281,23 @@ async function monthlyCheck(): Promise<string | null> {
   if (concentrationLines.length > 0) {
     msg += `\n【上位銘柄の占有率 (自由売買口座)】\n`
     concentrationLines.forEach(l => { msg += `${l}\n` })
+  }
+
+  // 投信積立の年間予定・残枠 (Phase 10)
+  if (tsumitateSettings.length > 0) {
+    const monthlyTotal = tsumitateSettings.reduce((s, t) => s + Number(t.monthly_amount ?? 0), 0)
+    const annualPlan = monthlyTotal * 12
+    const ytdMonths = currentMonth - 1  // 先月までの実績
+    const ytdContribution = monthlyTotal * ytdMonths
+    msg += `\n【投信積立 (NISAつみたて枠)】\n`
+    for (const t of tsumitateSettings) {
+      msg += `・${t.name}: ${Number(t.monthly_amount).toLocaleString()}円/月\n`
+    }
+    msg += `・年間予定: ${annualPlan.toLocaleString()}円 / ${ytdMonths}ヶ月時点累計: ${ytdContribution.toLocaleString()}円\n`
+    const tsumitateRemaining = Math.max(0, Number(profile?.nisa_tsumitate_limit ?? 0) - Number(profile?.nisa_tsumitate_used ?? 0))
+    if (tsumitateRemaining > 0) {
+      msg += `・つみたて枠残: ${tsumitateRemaining.toLocaleString()}円\n`
+    }
   }
 
   if (profile?.target_amount) {
