@@ -104,6 +104,25 @@ interface ConcentrationContext {
  *   - 'pattern' (adaptive AI exit): 「伸ばすか確定か」を熟考
  *   - その他: 標準
  */
+// 過去の自己改善 lessons を取得 (exit_judgment_reflection 系のみ)
+// Phase 8 自己改善ループ: 過去判定の振り返り → AI prompt に注入 → 精度向上
+interface Lesson { category: string; principle: string; evidence: string }
+async function fetchRecentLessons(): Promise<Lesson[]> {
+  try {
+    const { data } = await adminSupabase
+      .from('reflection_lessons')
+      .select('lessons')
+      .like('source_label', 'exit_judgment_reflection%')
+      .order('created_at', { ascending: false })
+      .limit(1)
+    if (!data || data.length === 0) return []
+    const lessons = data[0].lessons
+    return Array.isArray(lessons) ? (lessons as Lesson[]).slice(0, 5) : []
+  } catch {
+    return []
+  }
+}
+
 async function askAIForConfirmation(
   h: Holding,
   segmentLabel: string,
@@ -124,6 +143,7 @@ async function askAIForConfirmation(
   current: number,  // J-Quants最新終値
   dividend: DividendInfo | null,
   concentration: ConcentrationContext,
+  lessons: Lesson[],
 ): Promise<AIOverride> {
   const techSummary = [
     indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
@@ -160,6 +180,17 @@ async function askAIForConfirmation(
 - 売却判断には「キャピタル損益 + 想定配当収入」を総合評価\n`
     : ''
 
+  // 自己改善 lessons セクション (Phase 8)
+  // 過去判定の振り返りから得られた教訓を判断材料に注入
+  const lessonsBlock = lessons.length > 0
+    ? `\n【🧠 過去の判定から得た教訓 (重要度順)】
+${lessons.map(l => {
+  const icon = l.category === 'avoid' ? '🚫' : l.category === 'prefer' ? '⭐' : '💡'
+  return `${icon} ${l.principle}\n   (${l.evidence})`
+}).join('\n')}
+↑ 上記の lessons を今回の判断に反映してください\n`
+    : ''
+
   // 集中度セクション
   // 単一銘柄への集中はリスク。30%超は分散原則に反する。
   // 利確判断ではむしろ集中度を下げる方向に評価したい。
@@ -179,7 +210,7 @@ async function askAIForConfirmation(
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}${dividendBlock}${concentrationBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}${lessonsBlock}
 ---
 
 判断の本質 (利益最大化視点):
@@ -227,7 +258,7 @@ JSON のみ:
 
 【テクニカル】
 ${techSummary}
-${nisaBlock}${dividendBlock}${concentrationBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}${lessonsBlock}
 ---
 判断指針:
 
@@ -267,7 +298,7 @@ JSON のみで回答:
 【セグメント】${segmentLabel}
 【推奨戦略】${strategyLabel(strategy)}
 【発動した売却トリガー】${triggerReason}
-${nisaBlock}${dividendBlock}${concentrationBlock}
+${nisaBlock}${dividendBlock}${concentrationBlock}${lessonsBlock}
 文脈で見て売らない方が良い場合もあります。
 JSON のみで回答:
 {
@@ -316,6 +347,9 @@ export async function POST() {
 
   const idToken = await getIdToken()
   if (!idToken) return NextResponse.json({ error: 'jquants auth failed' }, { status: 503 })
+
+  // 自己改善 lessons を一度だけ取得 (Phase 8)
+  const recentLessons = await fetchRecentLessons()
 
   // NISA 成長枠の状況を取得
   const { data: profile } = await adminSupabase.from('profile').select('*').single()
@@ -518,6 +552,7 @@ export async function POST() {
             totalEvalYen: Math.round(totalTradableEval),
             thisEvalYen: Math.round(thisEval),
           },
+          recentLessons,
         )
         decision = aiConfirm.decision
         confidence = aiConfirm.confidence

@@ -21,6 +21,10 @@
       "schedule": "30 23 1 * *"
     },
     {
+      "path": "/api/exit-judgment/reflect",
+      "schedule": "0 0 1 * *"
+    },
+    {
       "path": "/api/exit-judgment/evaluate",
       "schedule": "0 0 * * 6"
     },
