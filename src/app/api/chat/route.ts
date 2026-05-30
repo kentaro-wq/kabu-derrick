@@ -794,7 +794,7 @@ async function buildResearchContext(
   })
 
   if (lines.length === 0) return ''
-  return `\n【検討銘柄の自動収集データ（kabutan/Yahoo Finance取得・この事実を分析に使うこと。ユーザーのスクショに依存せず自分で確認した数値）】\n${lines.join('\n')}\n※ これらは確定データ。ただし材料・ニュース性（M&A報道等）は別途ユーザーに確認すること。\n`
+  return `\n【検討中の未保有銘柄・自動収集データ（kabutan/Yahoo Finance取得）】\n※ 以下は【保有銘柄明細】にも【執行中の注文】にも無い=ユーザーは保有も注文もしていない検討段階の銘柄。データが詳しくても「保有している」と誤解しないこと。スクショ依存を避け自分で確認した数値なので分析に使ってよい。\n${lines.join('\n')}\n※ これらは確定データ。ただし材料・ニュース性（M&A報道等）は別途ユーザーに確認すること。\n`
 }
 
 // ─── メインハンドラ ───────────────────────────────────────────────
@@ -859,7 +859,7 @@ export async function POST(req: Request) {
     }
 
     const content = await claudeGenerate({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-opus-4-8',  // メイン相談は系の核。最高知能で誤認・論理破綻を抑える
       maxTokens: 1200,
       system: MAIN_SYSTEM,
       messages: priorMessages,
@@ -908,7 +908,7 @@ export async function POST(req: Request) {
     ].join('\n\n')
 
     const content = await claudeGenerate({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-opus-4-8',  // 円卓の統合見解もユーザーが読む結論。メインと同格に上げる
       maxTokens: 1000,
       system: MAIN_SYSTEM,
       messages: [{
