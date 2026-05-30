@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import { claudeGenerate, ClaudeMessage } from '@/lib/claude'
 import { geminiGenerate } from '@/lib/gemini' // orders/parse等の画像解析で引き続き使用
 import { adminSupabase } from '@/lib/supabase'
-import { fetchMentionedPrices, fetchPrice } from '@/lib/stock-price'
-import { fetchMarketStats } from '@/lib/kabutan'
+import { fetchMentionedPrices, fetchPrice, fetchYahooBars, extractTickers } from '@/lib/stock-price'
+import { fetchMarketStats, fetchMultipleStockInfo, fetchEarningsInfo } from '@/lib/kabutan'
 import { recalcNisaUsed } from '@/lib/nisa-sync'
 import { getNisaStatus } from '@/lib/nisa'
 
@@ -701,6 +701,82 @@ ${recentText}` }],
   }
 }
 
+// ─── 銘柄リサーチコンテキスト生成 ─────────────────────────────────
+// 相談に出た銘柄を AI が自力でデータ収集する。ユーザーのスクショ依存=恣意的な
+// 検討材料の偏りを防ぐ目的。特定口座でイベント駆動を試す局面ほどデータ収集が重要。
+// 質問 + 直近履歴から4桁ティッカーを抽出し、ファンダ(kabutan)+値動き(Yahoo)を取得する。
+
+// 値動きサマリー: 3ヶ月bars から直近終値・高安・移動平均位置・期間騰落を算出
+function summarizeBars(bars: Array<{ date: string; close: number }>): string | null {
+  if (bars.length < 5) return null
+  const closes = bars.map(b => b.close)
+  const last = closes[closes.length - 1]
+  const high = Math.max(...closes)
+  const low = Math.min(...closes)
+  const first = closes[0]
+  const periodPct = ((last - first) / first) * 100
+  // 直近高値からの位置（高値圏か押し目か）
+  const fromHighPct = ((last - high) / high) * 100
+  const fromLowPct = ((last - low) / low) * 100
+  // 25日移動平均（営業日近似）
+  const ma25 = closes.slice(-25).reduce((s, c) => s + c, 0) / Math.min(25, closes.length)
+  const ma25Pos = ((last - ma25) / ma25) * 100
+  return `3ヶ月騰落${periodPct >= 0 ? '+' : ''}${periodPct.toFixed(1)}% / 期間高値${high.toLocaleString()}円(現在は高値比${fromHighPct.toFixed(1)}%) / 期間安値${low.toLocaleString()}円(安値比+${fromLowPct.toFixed(1)}%) / 25日線${ma25Pos >= 0 ? '上' : '下'}方${Math.abs(ma25Pos).toFixed(1)}%`
+}
+
+async function buildResearchContext(
+  question: string,
+  history: Array<{ role: string; content: string }>,
+  holdingTickers: Set<string>,
+): Promise<string> {
+  // 質問 + 直近4ターンのテキストからティッカー抽出
+  const recentText = [question, ...history.slice(-4).map(m => m.content)].join(' ')
+  const tickers = extractTickers(recentText)
+  if (tickers.length === 0) return ''
+
+  // 保有銘柄は既にポートフォリオ明細にあるので、新規検討銘柄を優先（最大4件に制限=レイテンシ対策）
+  const fresh = tickers.filter(t => !holdingTickers.has(t)).slice(0, 4)
+  if (fresh.length === 0) return ''
+
+  const [infoMap, barsResults, earningsResults] = await Promise.all([
+    fetchMultipleStockInfo(fresh).catch(() => ({})),
+    Promise.allSettled(fresh.map(t => fetchYahooBars(t, '3mo'))),
+    Promise.allSettled(fresh.map(t => fetchEarningsInfo(t))),
+  ])
+
+  const lines: string[] = []
+  fresh.forEach((ticker, i) => {
+    const info = (infoMap as Record<string, { price: number | null; changePct: number | null; per: number | null; pbr: number | null; dividendYield: number | null; revenueGrowthPct: number | null; profitGrowthPct: number | null; eps: number | null; dps: number | null }>)[ticker]
+    const barsRes = barsResults[i]
+    const bars = barsRes.status === 'fulfilled' ? barsRes.value.map(b => ({ date: b.date, close: b.close })) : []
+    const earnRes = earningsResults[i]
+    const earn = earnRes.status === 'fulfilled' ? earnRes.value : null
+
+    const parts: string[] = []
+    if (info) {
+      if (info.per != null) parts.push(`PER${info.per}倍`)
+      if (info.pbr != null) parts.push(`PBR${info.pbr}倍`)
+      if (info.dividendYield != null) parts.push(`配当利回り${info.dividendYield}%`)
+      if (info.revenueGrowthPct != null) parts.push(`売上前期比${info.revenueGrowthPct >= 0 ? '+' : ''}${info.revenueGrowthPct}%`)
+      if (info.profitGrowthPct != null) parts.push(`経常益前期比${info.profitGrowthPct >= 0 ? '+' : ''}${info.profitGrowthPct}%`)
+      if (info.eps != null) parts.push(`予想EPS${info.eps}円`)
+      if (info.dps != null) parts.push(`予想配当${info.dps}円`)
+    }
+    const barSummary = summarizeBars(bars)
+    if (parts.length === 0 && !barSummary) return  // データ皆無ならスキップ
+
+    lines.push(`・${ticker}:`)
+    if (parts.length > 0) lines.push(`  ファンダ: ${parts.join(' / ')}`)
+    if (barSummary) lines.push(`  値動き: ${barSummary}`)
+    if (earn && earn.daysToNext >= 0 && earn.daysToNext <= 30) {
+      lines.push(`  決算: 次回${earn.nextEstimated}(あと${earn.daysToNext}日)・値動き急変注意`)
+    }
+  })
+
+  if (lines.length === 0) return ''
+  return `\n【検討銘柄の自動収集データ（kabutan/Yahoo Finance取得・この事実を分析に使うこと。ユーザーのスクショに依存せず自分で確認した数値）】\n${lines.join('\n')}\n※ これらは確定データ。ただし材料・ニュース性（M&A報道等）は別途ユーザーに確認すること。\n`
+}
+
 // ─── メインハンドラ ───────────────────────────────────────────────
 export async function POST(req: Request) {
   const body = await req.json()
@@ -719,7 +795,14 @@ export async function POST(req: Request) {
   const actionsLog = await executePortfolioAction(detectedAction)
   if (actionsLog.length > 0) recalcNisaUsed().catch(console.error) // 約定後にNISA利用済を再計算
 
-  const context = await getPortfolioContext(realtimePrices)
+  // 保有tickerを取得し、検討銘柄(保有外)のリサーチデータを自動収集
+  const { data: holdingRows } = await adminSupabase.from('holdings').select('ticker')
+  const holdingTickers = new Set((holdingRows ?? []).map(h => h.ticker).filter((t): t is string => !!t))
+  const researchContext = mode === 'main'
+    ? await buildResearchContext(question ?? '', history ?? [], holdingTickers).catch(() => '')
+    : ''
+
+  const context = await getPortfolioContext(realtimePrices) + researchContext
 
   if (mode === 'main') {
     const priorMessages: ClaudeMessage[] = (history ?? []).map(
