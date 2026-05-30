@@ -366,7 +366,15 @@ ${allText}` }],
       }],
     })
     const cleaned = result.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-    return JSON.parse(cleaned) as PortfolioAction
+    const parsed = JSON.parse(cleaned) as PortfolioAction
+    // ticker 正規化: AI が文字列 "null"/"NULL"/"なし" や非4桁を返した場合に
+    // 素通りして DB に混入し、後段の holdings 照合(ticker完全一致)を壊すのを防ぐ。
+    // 4桁数字でなければ null に倒し、name ベース照合にフォールバックさせる。
+    if ('ticker' in parsed && parsed.ticker != null) {
+      const t = String(parsed.ticker).trim()
+      parsed.ticker = /^\d{4}$/.test(t) ? t : null
+    }
+    return parsed
   } catch {
     return { action: 'none' }
   }
