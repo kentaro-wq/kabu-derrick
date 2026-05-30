@@ -296,6 +296,20 @@ async function detectPortfolioAction(
   ]
   if (!actionKeywords.some(k => allText.includes(k))) return { action: 'none' }
 
+  // 見送り・中止の明示があれば抽出しない (相談が「進めない」結論に達したケース)。
+  // 直近のユーザー発言＋今回の発言に否定・見送り語があれば none。
+  // 注: ここで弾けなくても後段プロンプトと execute 層の重複防止が二重の安全網になる。
+  const latestUserText = [
+    ...recentMsgs.filter(m => m.role === 'user').slice(-2).map(m => m.content),
+    question,
+  ].join(' ')
+  const cancelKeywords = [
+    '見送', 'やめた', 'やめる', 'やめとく', 'やめておく', '見合わせ', '保留',
+    '買わない', '売らない', '注文しない', '発注しない', 'キャンセル', '取り消',
+    '見送り', '今回はパス', 'スルー', '様子見', 'まだ買わ', 'まだ売ら',
+  ]
+  if (cancelKeywords.some(k => latestUserText.includes(k))) return { action: 'none' }
+
   // 重複防止: DBの既存注文（active + 直近14日のexecuted）・保有・実現済みを取得
   const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
   const [ordersActiveRes, ordersRecentRes, holdingsRes, realizedRes] = await Promise.all([
@@ -325,6 +339,8 @@ async function detectPortfolioAction(
 【抽出ルール】
 - 「〜した」「〜してきた」「〜できた」「〜しておいた」など完了形のみ対象
 - 「〜しようかな」「〜どう思う？」「〜検討中」は対象外（まだ実行していない）
+- 【最重要】相談の結論が「見送り」「やめる」「買わない」「売らない」「様子見」「保留」なら、過去にどれだけ価格や株数を議論していても必ず {"action":"none"}。検討の途中経過を注文と誤認しないこと
+- 【最重要】1件の注文について確認スクショや会話を複数回繰り返している場合でも、抽出するのは「最終的に確定した1件」のみ。同じ注文を何度も別件として抽出しない。下記【登録済み注文】に同一銘柄・同方向が既にあれば原則 {"action":"none"}（価格・株数の訂正がある場合のみ同一銘柄を再抽出してよい）
 - 会話の流れから銘柄・価格・株数・口座を推測してよい
 - 既に登録済みの注文・約定済み・保有中の内容は重複登録しない（「14日以内に約定済み」の注文は絶対に再登録しない）
 - 既に保有中の銘柄をbuy_executedで再登録するのは「追加購入した」と明言された場合のみ
@@ -362,6 +378,52 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
 
   if (action.action === 'order_placed') {
     const defaultDeadline = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const typeLabel = action.order_type === 'buy' ? '買い' : '売り'
+    const priceStr = action.price ? `${action.price.toLocaleString()}円` : '価格未定'
+    const qtyStr = action.quantity ? `${action.quantity}株` : '株数未定'
+    const acctLabel = action.account_type === 'nisa_growth' ? 'NISA成長' : '特定口座'
+
+    // 重複防止: 同一銘柄・同売買方向の active 注文が既にあれば、新規INSERTせず
+    // 最新内容で1件に集約する。
+    // (1注文の確認スクショを複数回アップロードした際に、文脈が割れて
+    //  毎ターン抽出され重複登録される問題への対策。exit_judgments/decision_log
+    //  と同じ「DBレベル重複チェック」パターンを orders にも適用する)
+    const dupQuery = adminSupabase
+      .from('orders')
+      .select('id, price, quantity')
+      .eq('status', 'active')
+      .eq('order_type', action.order_type)
+    const dupFinal = action.ticker
+      ? dupQuery.eq('ticker', action.ticker)
+      : dupQuery.ilike('name', `%${action.name}%`)
+    const { data: existingActive } = await dupFinal
+
+    if (existingActive && existingActive.length > 0) {
+      // 既存 active 注文を最新内容で更新（価格・株数が判明していれば反映）。
+      // 余剰の重複行があればまとめて同内容に揃える（集約）。
+      const ids = existingActive.map(o => o.id)
+      const keepId = ids[0]
+      await adminSupabase.from('orders').update({
+        name: action.name,
+        ticker: action.ticker ?? '',
+        order_method: 'limit',
+        price: action.price ?? existingActive[0].price,
+        quantity: action.quantity ?? existingActive[0].quantity,
+        account_type: action.account_type ?? 'nisa_growth',
+        deadline: action.deadline ?? defaultDeadline,
+        updated_at: new Date().toISOString(),
+      }).eq('id', keepId)
+      // 同一銘柄・同方向の余剰重複は cancelled にして記録を1本化
+      const surplus = ids.slice(1)
+      if (surplus.length > 0) {
+        await adminSupabase.from('orders')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .in('id', surplus)
+      }
+      logs.push(`✅ 既存の注文「${action.name}」を最新内容で更新（重複登録を防止${surplus.length > 0 ? `・重複${surplus.length}件を統合` : ''}）`)
+      return logs
+    }
+
     const { error } = await adminSupabase.from('orders').insert({
       name: action.name,
       ticker: action.ticker ?? '',
@@ -374,10 +436,7 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
       status: 'active',
     })
     if (!error) {
-      const typeLabel = action.order_type === 'buy' ? '買い' : '売り'
-      const priceStr = action.price ? `${action.price.toLocaleString()}円` : '価格未定'
-      const qtyStr = action.quantity ? `${action.quantity}株` : '株数未定'
-      logs.push(`✅ 注文登録「${action.name}」${typeLabel}指値 ${priceStr} ${qtyStr}（${action.account_type === 'nisa_growth' ? 'NISA成長' : '特定口座'}）`)
+      logs.push(`✅ 注文登録「${action.name}」${typeLabel}指値 ${priceStr} ${qtyStr}（${acctLabel}）`)
     } else {
       logs.push(`⚠️ 注文登録に失敗しました: ${error.message}`)
     }
