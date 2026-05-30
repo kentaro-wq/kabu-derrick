@@ -5,6 +5,7 @@ import { adminSupabase } from '@/lib/supabase'
 import { fetchMentionedPrices, fetchPrice } from '@/lib/stock-price'
 import { fetchMarketStats } from '@/lib/kabutan'
 import { recalcNisaUsed } from '@/lib/nisa-sync'
+import { getNisaStatus } from '@/lib/nisa'
 
 // ─── 共通禁止ルール ───────────────────────────────────────────────
 // BANNED_PHRASES: MAIN_SYSTEM・全ペルソナで共通使用
@@ -56,6 +57,13 @@ ${BANNED_PHRASES}
 - 間違いを修正するときは「修正:」と書いてすぐ正しい内容へ。謝罪なし
 - コンテキストにある情報（保有目的・売買ルール・合意事項）をユーザーに再確認・再説明させない
 
+# 事実と仮定の区別（最重要・このAIの信用の核）
+- 数値には3種類ある: ①コンテキスト/DB由来の確定値 ②過去会話で本人が述べた値 ③どこにも無い未確認の値。①②は使ってよい。
+- **③の未確認値を計算に使うときは、必ずその数字に「（仮・要確認）」と付け、結論を断定しない。** 例:「奨励金率」「持株会の月拠出額」「将来の積立増額」などコンテキストに無い数字。
+- 重要な判断（移管・売却・配分・タイミング）が未確認値に依存するなら、**計算で押し切らず、先に「○○はいくらですか?」と1問だけ聞く。**
+- 確定値とぼかすべき推定を混ぜない。「たぶん」「おそらく」で数字を作って表に入れない。無い数字は「未確認」と書く。
+- ユーザーが「変だ」と気づける余地を残すことが最優先。もっともらしさより、出所の明示。
+
 # 約定・注文のDB自動更新について（重要）
 - ユーザーが約定・注文を伝えると、システムが自動でDB（注文履歴・保有銘柄）を更新する
 - 「楽天証券の注文画面で確認してください」「注文画面で操作してください」は禁止
@@ -77,12 +85,13 @@ ${PRICE_RULES}`
 
 // ─── ポートフォリオコンテキスト生成 ─────────────────────────────
 async function getPortfolioContext(realtimePrices?: Record<string, number>): Promise<string> {
-  const [holdingsRes, ordersRes, tsumitateRes, policyRes, rulesRes, marketStats] = await Promise.all([
+  const [holdingsRes, ordersRes, tsumitateRes, policyRes, rulesRes, profileRes, marketStats] = await Promise.all([
     adminSupabase.from('holdings').select('*'),
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     adminSupabase.from('tsumitate_settings').select('*'),
     adminSupabase.from('investment_policy').select('content').limit(1).single(),
     adminSupabase.from('holding_rules').select('ticker,name,purpose,policy_basis,sell_conditions,dividend_notes,timeline_notes,raw_agreement').eq('is_active', true),
+    adminSupabase.from('profile').select('*').limit(1).single(),
     fetchMarketStats().catch(() => null),
   ])
   const holdings = holdingsRes.data ?? []
@@ -90,6 +99,7 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   const tsumitate = tsumitateRes.data ?? []
   const policy = policyRes.data?.content ?? ''
   const rules = rulesRes.data ?? []
+  const profile = profileRes.data ?? null
 
   const toMan = (yen: number) => `${Math.round(yen / 10000)}万円`
   const total = holdings.reduce((s, h) => s + (h.evaluation_amount ?? 0), 0)
@@ -118,6 +128,10 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
     : totalMin >= 11 * 60 + 30 && totalMin < 12 * 60 + 30 ? '🟡 昼休み（後場待ち）'
     : '🔴 時間外'
 
+  const bankBalance = profile?.bank_balance != null ? Number(profile.bank_balance) : null
+  const cashReserve = profile?.cash_reserve != null ? Number(profile.cash_reserve) : null
+  const investable = bankBalance != null && cashReserve != null ? Math.max(0, bankBalance - cashReserve) : null
+
   let ctx = `【現在日時】${dateStr}
 【市場状況】${marketStatus}
 
@@ -126,7 +140,7 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
 ・投資目標: 15年後（65歳）にDC別・現金別で3,000万円以上（投資資産のみでカウント）
 ・iDeCo: 2026年5月申請済み（企業型DCと併用・掛け金上限2万円/月）
 ・投資経験: インデックス積立は長年のベテラン、個別株は2026年から開始
-・銀行預金: 約970万円（投資可能額: 約670万円）\n\n`
+・銀行預金: ${bankBalance != null ? `${toMan(bankBalance)}` : '不明'}${cashReserve != null ? `（うち生活防衛 ${toMan(cashReserve)} は死守・投資可能額: ${investable != null ? toMan(investable) : '不明'}）` : ''}\n\n`
 
   if (policy && !policy.includes('まだ方針')) {
     ctx += `【現在の投資方針】\n${policy}\n\n`
@@ -163,6 +177,22 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
     tsumitate.forEach((t: { name: string; monthly_amount: number }) => {
       ctx += `・${t.name}: 月${t.monthly_amount.toLocaleString()}円\n`
     })
+  }
+
+  // NISA枠の使用状況（確定値・DB由来）。「枠がある前提」の幻想を防ぐため必ず明示する。
+  // 楽天証券の表示と一致させる: 残り = 上限 − 利用済（積立予定は別建てで示す）。
+  if (profile) {
+    const growthLimit = Number(profile.nisa_growth_limit)
+    const growthUsed = Number(profile.nisa_growth_used)
+    const growthRemaining = Math.max(0, growthLimit - growthUsed)
+    const tsumitateLimit = Number(profile.nisa_tsumitate_limit)
+    const tsumitateUsed = Number(profile.nisa_tsumitate_used)
+    const tsumitateRemaining = Math.max(0, tsumitateLimit - tsumitateUsed)
+    const nisa = getNisaStatus(profile, tsumitateTotal)  // 積立予定・最終残の算出用
+    ctx += `\n【NISA枠の使用状況（今年・DB確定値=楽天証券と一致。この数字だけを計算の前提にすること）】\n`
+    ctx += `・成長枠: 年間上限${toMan(growthLimit)} / 利用済${toMan(growthUsed)}（注文中含む） → 残り ${toMan(growthRemaining)}\n`
+    ctx += `・つみたて枠: 年間上限${toMan(tsumitateLimit)} / 利用済${toMan(tsumitateUsed)} → 残り ${toMan(tsumitateRemaining)}（うち積立予定${toMan(nisa.tsumitateScheduled)}を消化すると最終残${toMan(nisa.tsumitateRemaining)}）\n`
+    ctx += `※ 年内に売っても年間枠は復活しない（簿価枠の復活は翌年）。NISA枠を使う提案は必ずこの残額の範囲内で行うこと。これを超える追加投入は不可と明言すること。\n`
   }
 
   if (rules.length > 0) {
