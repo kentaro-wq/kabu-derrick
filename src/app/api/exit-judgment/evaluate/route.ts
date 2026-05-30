@@ -11,17 +11,15 @@
  *  4. 14日後データが揃ったら decision_was_right を評価
  *  5. 週次集計を LINE 通知
  *
- * 判定の正解基準 (14日後ベース):
- *  - hold: 14日後の価格が判定時より下がっていなければ正解 (上昇基調を逃さなかった)
- *  - cut_loss: 14日後の価格が判定時より下がっていれば正解 (損切が早かった)
- *               14日後に +5% 超上がっていれば不正解 (機会損失)
- *  - take_profit: 14日後の価格が判定時 +5% 以内なら正解 (上手く利確できた)
- *                 14日後に +10% 超上がっていれば不正解 (まだ持つべきだった)
+ * 判定の正解基準・評価ホライズンは src/lib/judgment-eval.ts に一元化
+ * (evaluate と reflect が同じ基準を参照し、ドリフトを防ぐ)。
+ * ホライズンは戦略別 (固定20日=20営業日, トレーリング/AI=14営業日 等)。
  */
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
 import { fetchYahooBars } from '@/lib/stock-price'
+import { evaluateDecision, evalHorizonDays } from '@/lib/judgment-eval'
 
 export const maxDuration = 60
 
@@ -32,34 +30,15 @@ interface ExitJudgmentRow {
   judgment_date: string
   current_price: number
   decision: 'hold' | 'take_profit' | 'cut_loss'
+  strategy: string | null
   price_7d_after: number | null
   price_14d_after: number | null
   pct_7d_after: number | null
   pct_14d_after: number | null
+  price_at_horizon: number | null
+  pct_at_horizon: number | null
+  eval_horizon_days: number | null
   decision_was_right: boolean | null
-}
-
-function evaluateDecision(
-  decision: string,
-  judgmentPrice: number,
-  futurePrice: number,
-): boolean {
-  const pctChange = ((futurePrice - judgmentPrice) / judgmentPrice) * 100
-  if (decision === 'hold') {
-    // hold: 下がらなければ正解。-3% 超下がっていたら不正解
-    return pctChange >= -3
-  }
-  if (decision === 'cut_loss') {
-    // cut_loss: 下がっていれば正解 (損切で正しく回避)
-    // +5% 超上がっていたら不正解 (機会損失)
-    return pctChange < 5
-  }
-  if (decision === 'take_profit') {
-    // take_profit: ±5% 以内なら正解 (適切な利確)
-    // +10% 超上がっていたら不正解 (早すぎた)
-    return pctChange < 10
-  }
-  return true
 }
 
 // 指定日から N営業日後の終値を取得 (Yahoo bars)
@@ -78,10 +57,10 @@ export async function POST() {
   const fourteenDaysAgo = new Date(today)
   fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14)
 
-  // 評価対象: 7日以上前で price_7d_after が未設定 OR 14日以上前で price_14d_after が未設定
+  // 評価対象: 7日以上前で 7d/14d チェックポイント or ホライズン評価が未完了のもの
   const { data: rows } = await adminSupabase
     .from('exit_judgments')
-    .select('id, ticker, name, judgment_date, current_price, decision, price_7d_after, price_14d_after, pct_7d_after, pct_14d_after, decision_was_right')
+    .select('id, ticker, name, judgment_date, current_price, decision, strategy, price_7d_after, price_14d_after, pct_7d_after, pct_14d_after, price_at_horizon, pct_at_horizon, eval_horizon_days, decision_was_right')
     .lte('judgment_date', sevenDaysAgo.toISOString().slice(0, 10))
     .or('price_7d_after.is.null,price_14d_after.is.null,decision_was_right.is.null')
 
@@ -98,36 +77,46 @@ export async function POST() {
   }
 
   let updated = 0
-  const evaluations: Array<{ ticker: string; name: string; decision: string; pct14d: number; correct: boolean }> = []
+  const evaluations: Array<{ ticker: string; name: string; decision: string; pctHorizon: number; horizon: number; correct: boolean }> = []
 
   for (const r of rows as ExitJudgmentRow[]) {
     const bars = barsByTicker.get(r.ticker) ?? []
-    if (bars.length === 0) continue
+    if (bars.length === 0 || r.current_price <= 0) continue
 
     const updates: Partial<ExitJudgmentRow> = {}
 
-    // 7日後の価格を埋める
+    // 7d / 14d は生データのチェックポイントとして従来どおり記録 (情報用)
     if (r.price_7d_after === null) {
       const p7 = findPriceNDaysAfter(bars, r.judgment_date, 7)
-      if (p7 !== null && r.current_price > 0) {
+      if (p7 !== null) {
         updates.price_7d_after = p7
         updates.pct_7d_after = ((p7 - r.current_price) / r.current_price) * 100
       }
     }
-
-    // 14日後の価格 + 評価
-    const judgmentDate = new Date(r.judgment_date)
-    const daysSince = Math.floor((today.getTime() - judgmentDate.getTime()) / 86400000)
-    if (daysSince >= 14 && r.price_14d_after === null) {
+    if (r.price_14d_after === null) {
       const p14 = findPriceNDaysAfter(bars, r.judgment_date, 14)
-      if (p14 !== null && r.current_price > 0) {
+      if (p14 !== null) {
         updates.price_14d_after = p14
-        const pct14 = ((p14 - r.current_price) / r.current_price) * 100
-        updates.pct_14d_after = pct14
-        updates.decision_was_right = evaluateDecision(r.decision, r.current_price, p14)
+        updates.pct_14d_after = ((p14 - r.current_price) / r.current_price) * 100
+      }
+    }
+
+    // 正解判定: 戦略別ホライズン (営業日) の終値で評価。
+    // 適格性は「暦日」ではなく「ホライズン営業日 bar の存在」でゲート
+    // (暦日と営業日の混在バグを排除し、bar が揃った時点で確実に評価する)。
+    if (r.decision_was_right === null) {
+      const horizon = evalHorizonDays(r.strategy)
+      const ph = findPriceNDaysAfter(bars, r.judgment_date, horizon)
+      if (ph !== null) {
+        const pctH = ((ph - r.current_price) / r.current_price) * 100
+        updates.price_at_horizon = ph
+        updates.pct_at_horizon = pctH
+        updates.eval_horizon_days = horizon
+        updates.decision_was_right = evaluateDecision(r.decision, r.current_price, ph)
         evaluations.push({
           ticker: r.ticker, name: r.name, decision: r.decision,
-          pct14d: Math.round(pct14 * 10) / 10,
+          pctHorizon: Math.round(pctH * 10) / 10,
+          horizon,
           correct: updates.decision_was_right,
         })
       }
@@ -179,7 +168,7 @@ export async function POST() {
       for (const e of evaluations.slice(0, 5)) {
         const icon = e.correct ? '✓' : '✗'
         const label = e.decision === 'hold' ? '継続' : e.decision === 'cut_loss' ? '損切' : '利確'
-        msg += `${icon} ${e.name}(${e.ticker}) ${label}判定 → 14日後 ${e.pct14d >= 0 ? '+' : ''}${e.pct14d}%\n`
+        msg += `${icon} ${e.name}(${e.ticker}) ${label}判定 → ${e.horizon}営業日後 ${e.pctHorizon >= 0 ? '+' : ''}${e.pctHorizon}%\n`
       }
     }
     msg += `\n※的中率は AI 判定の質向上に向けたフィードバック指標です`

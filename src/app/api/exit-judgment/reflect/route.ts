@@ -18,6 +18,7 @@
 import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
+import { EVAL_CRITERIA_TEXT } from '@/lib/judgment-eval'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -38,7 +39,7 @@ export async function POST() {
 
   const { data: judgments } = await adminSupabase
     .from('exit_judgments')
-    .select('id, ticker, name, judgment_date, decision, confidence, reasoning, risk_factors, unrealized_gain_pct, pct_7d_after, pct_14d_after, decision_was_right, rsi14, ma5, ma25, volume_ratio, account_type')
+    .select('id, ticker, name, judgment_date, decision, strategy, confidence, reasoning, risk_factors, unrealized_gain_pct, pct_7d_after, pct_14d_after, pct_at_horizon, eval_horizon_days, decision_was_right, rsi14, ma5, ma25, volume_ratio, account_type')
     .gte('judgment_date', since)
     .not('decision_was_right', 'is', null)
     .order('judgment_date', { ascending: false })
@@ -70,9 +71,11 @@ export async function POST() {
     name: j.name,
     date: j.judgment_date,
     decision: j.decision,
+    strategy: j.strategy,
     reasoning: typeof j.reasoning === 'string' ? j.reasoning.slice(0, 100) : '',
     gainPct: j.unrealized_gain_pct,
-    pct14d: j.pct_14d_after,
+    horizonDays: j.eval_horizon_days,
+    pctAtHorizon: j.pct_at_horizon,
     rsi14: j.rsi14,
     ma5: j.ma5,
     ma25: j.ma25,
@@ -84,8 +87,10 @@ export async function POST() {
     name: j.name,
     date: j.judgment_date,
     decision: j.decision,
+    strategy: j.strategy,
     gainPct: j.unrealized_gain_pct,
-    pct14d: j.pct_14d_after,
+    horizonDays: j.eval_horizon_days,
+    pctAtHorizon: j.pct_at_horizon,
   }))
 
   const prompt = `あなたは AI 出口判定システムの自己改善担当です。
@@ -105,9 +110,7 @@ ${JSON.stringify(wrongSamples, null, 2)}
 ${JSON.stringify(rightSamples, null, 2)}
 
 判定正解基準:
-- hold: 14日後の価格が -3% より下がっていなければ正解
-- cut_loss: 14日後の価格が +5% より上がっていなければ正解 (機会損失でない)
-- take_profit: 14日後の価格が +10% より上がっていなければ正解 (早すぎない)
+${EVAL_CRITERIA_TEXT}
 
 抽出すべき lessons の種類:
 - avoid: 「こういう状況で X 判定したら間違える」パターン (不正解の原因)

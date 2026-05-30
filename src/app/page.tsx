@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { Holding, Order, Profile } from '@/types'
 import type { Alert } from '@/app/api/alerts/route'
+import AIAccuracyCard, { type ExitJudgment } from '@/components/AIAccuracyCard'
 
 function daysUntil(dateStr: string): number {
   const today = new Date(); today.setHours(0,0,0,0)
@@ -81,6 +82,7 @@ export default function Dashboard() {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
   const [exitJudgments, setExitJudgments] = useState<Record<string, { decision: string; confidence: number; reasoning: string; judgment_date: string }>>({})
+  const [allJudgments, setAllJudgments] = useState<ExitJudgment[]>([])
   const [judging, setJudging] = useState(false)
 
   useEffect(() => {
@@ -105,6 +107,7 @@ export default function Dashboard() {
         if (!map[j.ticker]) map[j.ticker] = { decision: j.decision, confidence: j.confidence, reasoning: j.reasoning, judgment_date: j.judgment_date }
       }
       setExitJudgments(map)
+      setAllJudgments(Array.isArray(ej?.judgments) ? ej.judgments : [])
       setLoading(false)
     })
   }, [])
@@ -293,6 +296,9 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/* AI判定の的中率 */}
+      <AIAccuracyCard judgments={allJudgments} />
 
       {/* 総資産推移グラフ */}
       {snapshots.length >= 2 && (

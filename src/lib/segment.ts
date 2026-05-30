@@ -111,6 +111,8 @@ export function checkStrategyTrigger(
   daysHeld: number,
   recentBars: OHLCVBar[],  // 直近30日程度
   peakSinceEntry: number,
+  holdingPeriodKnown: boolean = true,  // 真の取得日が判明しているか。false の場合、
+                                       // 保有日数依存の時間切れ利確(fixed_20d)を発火させない
 ): StrategyTrigger {
   const gainPct = (current - entry) / entry * 100
 
@@ -123,6 +125,11 @@ export function checkStrategyTrigger(
       // 第一防衛線: -8% で AI に深く問う（NISA文脈考慮）
       if (gainPct <= -8) {
         return { shouldExit: true, reason: `-8%損切第一線 (実${gainPct.toFixed(1)}%) AI判断`, triggerType: 'pattern' }
+      }
+      // 取得日不明時は時間切れ利確を発火させない (誤った保有日数での誤発火防止)。
+      // -8%/-15% の損切防衛線は上で既にチェック済みなので安全側で継続。
+      if (!holdingPeriodKnown) {
+        return { shouldExit: false, reason: `取得日不明のため時間切れ判定スキップ (含み益${gainPct.toFixed(1)}%)` }
       }
       if (daysHeld >= 20) {
         return { shouldExit: true, reason: `固定20日保有完了 (含み益${gainPct.toFixed(1)}%)`, triggerType: 'time_up' }

@@ -75,6 +75,7 @@ interface Holding {
   current_price: number | null
   unrealized_gain_pct: number | null
   created_at: string
+  purchase_date: string | null  // 真の取得日。null は積立型/不明。
 }
 
 interface AIOverride {
@@ -131,6 +132,7 @@ async function askAIForConfirmation(
   triggerType: string | undefined,
   gainPct: number,
   daysHeld: number,
+  holdingPeriodKnown: boolean,  // false の場合 daysHeld は DB登録基準の近似値
   indicators: {
     rsi14: number | null
     volumeRatio: number | null
@@ -145,6 +147,12 @@ async function askAIForConfirmation(
   concentration: ConcentrationContext,
   lessons: Lesson[],
 ): Promise<AIOverride> {
+  // 保有日数の表示ラベル。真の取得日が不明な場合は AI に明示し、
+  // 「保有日数を根拠にした利確判断」を避けさせる。
+  const daysHeldLabel = holdingPeriodKnown
+    ? `${daysHeld}日`
+    : `不明 (真の取得日が未登録のため保有日数は判断材料にしないでください)`
+
   const techSummary = [
     indicators.rsi14 != null ? `RSI(14): ${indicators.rsi14}` : '',
     indicators.volumeRatio != null ? `出来高比率: ${indicators.volumeRatio}倍` : '',
@@ -206,7 +214,7 @@ ${lessons.map(l => {
 【保有】${h.name}(${h.ticker})
 取得 ${h.purchase_price}円 × ${h.quantity}株
 現在 ${current}円 → 含み損 ${gainPct.toFixed(1)}%
-保有 ${daysHeld}日
+保有 ${daysHeldLabel}
 
 【テクニカル】
 ${techSummary}
@@ -254,7 +262,7 @@ JSON のみ:
 【保有】${h.name}(${h.ticker})
 取得 ${h.purchase_price}円 × ${h.quantity}株
 現在 ${current}円 → 含み益 ${gainPct.toFixed(1)}%
-保有 ${daysHeld}日
+保有 ${daysHeldLabel}
 
 【テクニカル】
 ${techSummary}
@@ -292,7 +300,7 @@ JSON のみで回答:
 【保有】${h.name}(${h.ticker})
 取得 ${h.purchase_price}円 × ${h.quantity}株
 現在 ${current}円 (含み益 ${gainPct.toFixed(1)}%)
-保有 ${daysHeld}日
+保有 ${daysHeldLabel}
 【テクニカル】${techSummary}
 
 【セグメント】${segmentLabel}
@@ -489,7 +497,12 @@ export async function POST() {
     }
     const segment = classifySegment(latestPrice, vol)
 
-    const daysHeld = Math.floor((Date.now() - new Date(h.created_at).getTime()) / 86400000)
+    // 保有日数は「真の取得日(purchase_date)」優先。無ければ created_at(DB登録日)に
+    // フォールバックするが、その場合は holdingPeriodKnown=false として
+    // 時間切れ利確(fixed_20d 20日)を発火させない (誤った保有日数での誤発火防止)。
+    const holdingPeriodKnown = !!h.purchase_date
+    const holdingStart = h.purchase_date ? new Date(h.purchase_date) : new Date(h.created_at)
+    const daysHeld = Math.floor((Date.now() - holdingStart.getTime()) / 86400000)
     const entry = Number(h.purchase_price)
     const current = latestPrice
     const gainPct = (current - entry) / entry * 100
@@ -504,6 +517,7 @@ export async function POST() {
 
     const trigger = checkStrategyTrigger(
       segment.recommendedStrategy, entry, current, daysHeld, sinceBars.slice(-5), peakSinceEntry,
+      holdingPeriodKnown,
     )
 
     let decision: 'hold' | 'take_profit' | 'cut_loss' = 'hold'
@@ -530,7 +544,7 @@ export async function POST() {
         // 利確・時間切れ・モメンタム判定は AI に最終確認
         aiConfirm = await askAIForConfirmation(
           h, segment.label, segment.recommendedStrategy, trigger.reason, trigger.triggerType,
-          gainPct, daysHeld,
+          gainPct, daysHeld, holdingPeriodKnown,
           {
             rsi14: ind.rsi14,
             volumeRatio: ind.volumeRatio,
@@ -581,6 +595,7 @@ export async function POST() {
       decision,
       confidence,
       reasoning,
+      strategy: segment.recommendedStrategy,
       risk_factors: aiConfirm ? null : `セグメント:${segment.label}/戦略:${strategyLabel(segment.recommendedStrategy)}/source:${dataSource}`,
       expected_action_within_days: decision === 'hold' ? 7 : 0,
     })
