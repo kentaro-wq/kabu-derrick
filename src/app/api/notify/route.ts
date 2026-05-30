@@ -310,6 +310,87 @@ async function monthlyCheck(): Promise<string | null> {
   return msg
 }
 
+// ── 操縦席: リスク予算チェック ─────────────────────────────────────────
+// deployed risk (crypto + 特定) が部屋530万に対してどの位置にあるかを確認し、
+// 超過・80%接近・株相関ドローダウン時に LINE アラートを返す。
+// 朝・夕の通知ハンドラから独立して呼ばれ、条件を満たす時のみ別メッセージを返す。
+const RISK_ROOM = 5_300_000  // 張れる部屋(確定): 530万
+
+async function riskBudgetCheck(): Promise<string | null> {
+  const [cryptoPoolRes, btcRuleRes, holdingsRes] = await Promise.all([
+    adminSupabase
+      .from('altcoin_pool_status')
+      .select('cash_balance, buy_amount')
+      .eq('status', 'ACTIVE'),
+    adminSupabase
+      .from('bot_rules')
+      .select('rule_value')
+      .eq('rule_key', 'btc_bot_capital')
+      .limit(1),
+    adminSupabase
+      .from('holdings')
+      .select('evaluation_amount, unrealized_gain, account_type'),
+  ])
+
+  const btcCapital = btcRuleRes.data?.[0]
+    ? parseFloat(btcRuleRes.data[0].rule_value) : 0
+  const altcoinTotal = (cryptoPoolRes.data ?? []).reduce(
+    (s, r) => s + parseFloat(r.cash_balance ?? '0') + parseFloat(r.buy_amount ?? '0'), 0
+  )
+  const cryptoDeployed = btcCapital + altcoinTotal
+
+  const holdings = holdingsRes.data ?? []
+  const tokuteiDeployed = holdings
+    .filter((h: { account_type: string }) => h.account_type === 'tokutei')
+    .reduce((s: number, h: { evaluation_amount: string | null }) =>
+      s + parseFloat(h.evaluation_amount ?? '0'), 0)
+
+  const totalDeployed = cryptoDeployed + tokuteiDeployed
+  const utilizationPct = (totalDeployed / RISK_ROOM) * 100
+
+  const lines: string[] = []
+
+  if (totalDeployed > RISK_ROOM) {
+    const excess = Math.round((totalDeployed - RISK_ROOM) / 10000)
+    lines.push(`🚨 リスク予算超過`)
+    lines.push(`デプロイ ${Math.round(totalDeployed / 10000)}万 > 部屋530万 (超過+${excess}万)`)
+    lines.push(`crypto ${Math.round(cryptoDeployed / 10000)}万 + 特定 ${Math.round(tokuteiDeployed / 10000)}万`)
+    lines.push(`→ 当面の増資を停止。削減を検討してください。`)
+  } else if (utilizationPct >= 80) {
+    lines.push(`⚠️ リスク予算 ${utilizationPct.toFixed(0)}% 到達`)
+    lines.push(`デプロイ ${Math.round(totalDeployed / 10000)}万 / 部屋530万`)
+    lines.push(`残余 ${Math.round((RISK_ROOM - totalDeployed) / 10000)}万`)
+  }
+
+  // 相関ドローダウン: 株ポートフォリオが -10% を超えて沈んでいる時
+  // crypto との同時ドローダウンで流動性クランチになるリスクを示す。
+  const totalEval = holdings.reduce(
+    (s: number, h: { evaluation_amount: string | null }) =>
+      s + parseFloat(h.evaluation_amount ?? '0'), 0
+  )
+  const totalUnrealized = holdings.reduce(
+    (s: number, h: { unrealized_gain: string | null }) =>
+      s + parseFloat(h.unrealized_gain ?? '0'), 0
+  )
+  if (totalEval > 0) {
+    const unrealizedPct = (totalUnrealized / totalEval) * 100
+    if (unrealizedPct < -10) {
+      lines.push(``)
+      lines.push(`⚠️ 相関リスク警告`)
+      lines.push(`株ポートフォリオ含み損 ${unrealizedPct.toFixed(1)}%`)
+      lines.push(`crypto 同時ドローダウン時は流動性クランチに注意`)
+    }
+  }
+
+  if (lines.length === 0) return null
+
+  const dateLabel = jstDateLabel(jstNow())
+  let msg = `🛡️ 操縦席アラート｜${dateLabel}\n\n`
+  msg += lines.join('\n')
+  msg += `\n\n部屋530万 / 現在${Math.round(totalDeployed / 10000)}万 (${utilizationPct.toFixed(1)}%)`
+  return msg
+}
+
 // ── ハンドラ ─────────────────────────────────────────────────────────
 async function handler(req: Request) {
   const isGet = req.method === 'GET'
@@ -333,16 +414,33 @@ async function handler(req: Request) {
     }).catch(e => console.error('[notify/morning] exit-judgment trigger failed:', e))
   }
 
-  const message = type === 'morning' ? await morningCheck()
-    : type === 'monthly' ? await monthlyCheck()
-    : await eveningCheck()
+  const [message, riskMessage] = await Promise.all([
+    type === 'morning' ? morningCheck()
+      : type === 'monthly' ? monthlyCheck()
+      : eveningCheck(),
+    // 朝・夕のみリスク予算チェックを実行(月次は別途実行される)
+    (type === 'morning' || type === 'evening') ? riskBudgetCheck() : Promise.resolve(null),
+  ])
 
-  if (!message) {
+  const results: { sent: boolean; type: string; skipped?: boolean }[] = []
+
+  if (message) {
+    const sent = await sendLineMessage(message)
+    results.push({ sent, type })
+  } else {
+    results.push({ sent: false, type, skipped: true })
+  }
+
+  if (riskMessage) {
+    const sent = await sendLineMessage(riskMessage)
+    results.push({ sent, type: 'risk_budget' })
+  }
+
+  if (results.every(r => r.skipped)) {
     return NextResponse.json({ success: false, skipped: true, type, reason: '通知条件なし' })
   }
 
-  const sent = await sendLineMessage(message)
-  return NextResponse.json({ success: sent, type, message })
+  return NextResponse.json({ success: true, results })
 }
 
 export async function POST(req: Request) { return handler(req) }
