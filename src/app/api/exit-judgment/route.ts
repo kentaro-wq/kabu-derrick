@@ -82,6 +82,7 @@ interface AIOverride {
   decision: 'hold' | 'take_profit' | 'cut_loss'
   confidence: number
   reasoning: string
+  aiFailed?: boolean  // AI応答失敗時のフォールバック (安全側hold) を識別
 }
 
 /** NISA成長枠コンテキスト */
@@ -323,11 +324,21 @@ JSON のみで回答:
     })
     const text = res.content[0].type === 'text' ? res.content[0].text : ''
     const m = text.match(/\{[\s\S]*\}/)
-    if (!m) return { decision: gainPct >= 0 ? 'take_profit' : 'cut_loss', confidence: 1, reasoning: 'AI応答なし、機械判断採用' }
-    return JSON.parse(m[0]) as AIOverride
+    // ⚠️ AI失敗時は「安全側=hold」を返す。以前は gainPct>=0 で take_profit に倒していたが、
+    // それは haiku の一時障害で含み益銘柄を強制利確してしまい、
+    // 「利益は伸ばす」哲学を破壊していた。-15%の機械防衛線が最終的に拾うため、
+    // 不確実な状況では売らずに保有を続けるのが哲学整合かつ安全。
+    // aiFailed フラグで呼び出し側が LINE 通知できるようにする (silent skip 禁忌)。
+    if (!m) return { decision: 'hold', confidence: 1, reasoning: '⚠️AI応答パース失敗のため安全側で継続(hold)。要手動確認', aiFailed: true }
+    const parsed = JSON.parse(m[0]) as AIOverride
+    // decision が想定外の値ならこれも安全側 hold
+    if (parsed.decision !== 'hold' && parsed.decision !== 'take_profit' && parsed.decision !== 'cut_loss') {
+      return { decision: 'hold', confidence: 1, reasoning: `⚠️AI応答が不正(decision=${String(parsed.decision)})のため安全側で継続(hold)。要手動確認`, aiFailed: true }
+    }
+    return parsed
   } catch (e) {
     console.error('[exit-judgment] AI error:', e)
-    return { decision: gainPct >= 0 ? 'take_profit' : 'cut_loss', confidence: 1, reasoning: 'AIエラー、機械判断採用' }
+    return { decision: 'hold', confidence: 1, reasoning: '⚠️AIエラーのため安全側で継続(hold)。要手動確認', aiFailed: true }
   }
 }
 
@@ -386,6 +397,9 @@ export async function POST() {
   }> = []
   const skippedDataMissing: Array<{ ticker: string; name: string; reason: string }> = []
   const skippedStaleData: Array<{ ticker: string; name: string; latestDate: string; daysOld: number }> = []
+  // トリガー発火後に AI確認が失敗し、安全側hold にフォールバックしたケース。
+  // 「本来は売買判断が必要だが AI が出せなかった」= 手動確認すべき重要イベント。
+  const aiConfirmFailures: Array<{ ticker: string; name: string; trigger: string; gainPct: number }> = []
   // 5% は値動きの激しい日に誤発火しやすいため 10% に緩和
   // (現実の1日変動 + データタイミング差で 5% は超え得る)
   const PRICE_SOURCE_DIVERGENCE_THRESHOLD_PCT = 10
@@ -571,6 +585,10 @@ export async function POST() {
         decision = aiConfirm.decision
         confidence = aiConfirm.confidence
         reasoning = `[${trigger.reason}] AI判定: ${aiConfirm.reasoning}`
+        // AI確認が失敗して安全側holdに倒れた場合は手動確認を促すため記録
+        if (aiConfirm.aiFailed) {
+          aiConfirmFailures.push({ ticker: h.ticker, name: h.name, trigger: trigger.reason, gainPct: Math.round(gainPct * 10) / 10 })
+        }
       }
     } else {
       decision = 'hold'
@@ -661,6 +679,13 @@ export async function POST() {
       `【J-Quants データ鮮度不足 (${JQUANTS_STALE_DAYS_THRESHOLD}日以上古い)】`,
       ...skippedStaleData.map(s => `▶ ${s.name}(${s.ticker}): 最新bar ${s.latestDate} (${s.daysOld}日前)`),
       '原因: J-Quants API の遅延・無料プラン制約・キャッシュ問題等'
+    )
+  }
+  if (aiConfirmFailures.length > 0) {
+    skipMsgs.push(
+      '【AI確認失敗 → 安全側で継続(hold)】',
+      ...aiConfirmFailures.map(s => `▶ ${s.name}(${s.ticker}): 売却トリガー発火(${s.trigger}/含み${s.gainPct >= 0 ? '+' : ''}${s.gainPct}%)だがAI判断不能`),
+      '原因: Claude API 一時障害・応答パース失敗等。売買判断が必要な可能性があるため手動確認を推奨'
     )
   }
   if (skipMsgs.length > 0) {
