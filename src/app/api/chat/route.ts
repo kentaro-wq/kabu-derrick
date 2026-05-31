@@ -84,10 +84,12 @@ ${BANNED_PHRASES}
 - **「それ本当に買うべきか」を一歩引いて問う役割を捨てない。** 執行アシスタントに終始せず、期待値・前提・代替案(見送り含む)を提示する。
 
 # 約定・注文のDB自動更新について（重要）
-- ユーザーが約定・注文を伝えると、システムが自動でDB（注文履歴・保有銘柄）を更新する
+- ユーザーが約定・注文・**注文の取消(キャンセル)**を伝えると、システムが自動でDB（注文履歴・保有銘柄）を更新する
+- 対応する操作: 注文を出した / 買い約定 / 売り約定 / **注文をキャンセルした**。これら完了形の報告で自動更新が走る。
 - 「楽天証券の注文画面で確認してください」「注文画面で操作してください」は禁止
 - 画像から約定を確認したら「[銘柄]が[価格]円で約定しました。DB更新中です。」と伝えるだけでよい
 - DB上に注文が残っていても、自動更新処理が動くので「手動操作が必要」とは言わない
+- **ただし「DB更新中」と言ってよいのは上記の完了形の報告に対してのみ。** 検討・相談の段階で「更新中」と言わない（実際には更新されず、嘘になる）。
 
 # 市場データの活用
 - ストップ高銘柄が多い = 市場全体が強気 = 上昇トレンド継続のサイン
@@ -324,6 +326,7 @@ type PortfolioAction =
   | { action: 'order_placed'; name: string; ticker?: string | null; order_type: 'buy' | 'sell'; price: number | null; quantity: number | null; account_type: string; deadline?: string | null }
   | { action: 'buy_executed'; name: string; ticker?: string | null; quantity: number | null; price: number | null; account_type: string }
   | { action: 'sell_executed'; name: string; ticker?: string | null; quantity?: number | null; price?: number | null }
+  | { action: 'order_cancelled'; name: string; ticker?: string | null; order_type?: 'buy' | 'sell' | null }
 
 async function detectPortfolioAction(
   question: string,
@@ -352,6 +355,34 @@ async function detectPortfolioAction(
     ...recentMsgs.filter(m => m.role === 'user').slice(-2).map(m => m.content),
     question,
   ].join(' ')
+  // ── 既存注文の「取消」を先に判定（見送りとは区別する）──
+  // 「注文をキャンセルしてきた/取り消した」= 既に出した注文を消す完了形。DB更新が必要。
+  // 「注文するのをやめる/見送る」= まだ出していない。none でよい。
+  // 区別の鍵: 取消の完了形 + active注文が実在 → order_cancelled。
+  const cancelDoneKeywords = ['キャンセルし', 'キャンセルして', '取り消し', '取消し', '取り消して', '取りやめ', '解除し']
+  const looksCancelDone = cancelDoneKeywords.some(k => question.includes(k))
+  if (looksCancelDone) {
+    const { data: actives } = await adminSupabase
+      .from('orders').select('name, ticker, order_type').eq('status', 'active')
+    if (actives && actives.length > 0) {
+      // 発言から対象銘柄を特定（ticker優先、無ければ名称部分一致）。1件のみ active なら自動特定。
+      const qTickers = extractTickers(question)
+      let target = actives.find(o => o.ticker && qTickers.includes(o.ticker))
+        ?? actives.find(o => o.name && question.includes(o.name.slice(0, 4)))
+      if (!target && actives.length === 1) target = actives[0]
+      if (target) {
+        return {
+          action: 'order_cancelled',
+          name: target.name,
+          ticker: target.ticker,
+          order_type: (target.order_type as 'buy' | 'sell' | null) ?? null,
+        }
+      }
+    }
+    // 取消と言われたが対象注文が特定できない → 安全側で none（誤って別注文を消さない）
+    return { action: 'none' }
+  }
+
   const cancelKeywords = [
     '見送', 'やめた', 'やめる', 'やめとく', 'やめておく', '見合わせ', '保留',
     '買わない', '売らない', '注文しない', '発注しない', 'キャンセル', '取り消',
@@ -509,6 +540,25 @@ async function executePortfolioAction(action: PortfolioAction): Promise<string[]
     } else {
       logs.push(`⚠️ 注文登録に失敗しました: ${error.message}`)
     }
+  }
+
+  if (action.action === 'order_cancelled') {
+    // 既存の active 注文を cancelled に。ticker 優先、無ければ名称部分一致。
+    let q = adminSupabase
+      .from('orders')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('status', 'active')
+    if (action.order_type) q = q.eq('order_type', action.order_type)
+    q = action.ticker ? q.eq('ticker', action.ticker) : q.ilike('name', `%${action.name}%`)
+    const { data: cancelled, error: cancelErr } = await q.select('name, ticker, order_type')
+    if (cancelErr) {
+      logs.push(`⚠️ 注文「${action.name}」のキャンセル更新に失敗: ${cancelErr.message}`)
+    } else if (cancelled && cancelled.length > 0) {
+      logs.push(`✅ 注文「${action.name}」をキャンセル済みに更新（${cancelled.length}件）`)
+    } else {
+      logs.push(`⚠️ 注文「${action.name}」に該当する執行中の注文が見つかりませんでした`)
+    }
+    return logs
   }
 
   if (action.action === 'buy_executed') {
