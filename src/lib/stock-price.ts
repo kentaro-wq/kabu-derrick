@@ -61,6 +61,48 @@ export async function fetchQuoteWithChange(ticker: string): Promise<QuoteWithCha
 }
 
 /**
+ * kabutan から PTS（夜間取引）価格を取得。前日終値比を返す。
+ * 日本株は Yahoo に寄り前気配が無い（hasPrePostMarketData: false）ため、
+ * 翌朝の寄りギャップの「前夜の予兆」として PTS を使う。
+ * kabutan の ?code=XXXX&tab=pts ページから kabuka2(価格)・kabuka3(時刻) を抽出。
+ * PTS出来高ゼロ等で価格が無い銘柄は null。
+ */
+export interface PtsQuote {
+  ptsPrice: number
+  prevClose: number
+  changePct: number
+  ptsTime: string  // 例 "23:51 05/29"
+}
+export async function fetchPtsQuote(ticker: string): Promise<PtsQuote | null> {
+  if (!/^\d{4}$/.test(ticker)) return null
+  try {
+    const res = await fetch(
+      `https://kabutan.jp/stock/?code=${ticker}&tab=pts`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }, signal: AbortSignal.timeout(8000) }
+    )
+    if (!res.ok) return null
+    const html = await res.text()
+    const m = html.match(/kabuka2">([\d,]+)円<\/div>\s*<div class="kabuka3">([^<]*)<\/div>/)
+    if (!m) return null
+    const ptsPrice = parseFloat(m[1].replace(/,/g, ''))
+    const ptsTime = m[2].replace(/　/g, ' ').trim()
+    if (!isFinite(ptsPrice) || ptsPrice <= 0) return null
+    // 前日終値は通常の chart meta（chartPreviousClose）から取得
+    const q = await fetchQuoteWithChange(ticker)
+    if (!q) return null
+    const prevClose = q.prevClose
+    return {
+      ptsPrice,
+      prevClose,
+      changePct: ((ptsPrice - prevClose) / prevClose) * 100,
+      ptsTime,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Yahoo Finance から OHLCV bars を取得（J-Quants フォールバック用）
  * J-Quants 無料プランの遅延・キャッシュ問題で直近データが取れない時に使う。
  * AdjC は無いので、株式分割がある銘柄では時系列ジャンプが発生する点に注意。

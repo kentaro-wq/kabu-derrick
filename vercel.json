@@ -47,6 +47,14 @@
     {
       "path": "/api/backtest/cron",
       "schedule": "0 17 * * *"
+    },
+    {
+      "path": "/api/market/pts-premarket",
+      "schedule": "0 13 * * 1-5"
+    },
+    {
+      "path": "/api/market/pts-confirm",
+      "schedule": "5 0 * * 1-5"
     }
   ]
 }
