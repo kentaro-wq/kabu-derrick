@@ -28,6 +28,39 @@ export async function fetchPrice(ticker: string): Promise<number | null> {
 }
 
 /**
+ * 最新価格と前日終値比を取得。
+ * Yahoo の previousClose は常に null のため、range=2d + chartPreviousClose を使う
+ * （AGENTS.md のデータソース注記に準拠）。寄り前・場中の急変検知に使う。
+ */
+export interface QuoteWithChange {
+  price: number
+  prevClose: number
+  changePct: number
+}
+export async function fetchQuoteWithChange(ticker: string): Promise<QuoteWithChange | null> {
+  const symbol = /^\d{4}$/.test(ticker) ? `${ticker}.T` : ticker
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const meta = data.chart?.result?.[0]?.meta
+    const price = meta?.regularMarketPrice
+    const prevClose = meta?.chartPreviousClose
+    if (price == null || prevClose == null || prevClose === 0) return null
+    return {
+      price,
+      prevClose,
+      changePct: ((price - prevClose) / prevClose) * 100,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Yahoo Finance から OHLCV bars を取得（J-Quants フォールバック用）
  * J-Quants 無料プランの遅延・キャッシュ問題で直近データが取れない時に使う。
  * AdjC は無いので、株式分割がある銘柄では時系列ジャンプが発生する点に注意。

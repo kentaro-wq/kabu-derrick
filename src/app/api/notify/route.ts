@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server'
 import { adminSupabase } from '@/lib/supabase'
 import { sendLineMessage } from '@/lib/line'
 import { getNisaStatus } from '@/lib/nisa'
-import { fetchDividendInfo } from '@/lib/stock-price'
+import { fetchDividendInfo, fetchQuoteWithChange } from '@/lib/stock-price'
 import { fetchEarningsInfo } from '@/lib/kabutan'
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
@@ -94,6 +94,65 @@ async function earningsCalendar(): Promise<string[]> {
   return reminders
 }
 
+// ── 寄り前・出口注意銘柄: 前日比が大きく動いた保有/注文銘柄を抽出 ──────────
+// ユーザーは仕事中で日中は株価を見られないが、〜9:15は通勤電車で動ける。
+// 朝の寄り前(8:30通知)に「今日出口を判断すべき銘柄」を1通に集約し、
+// 寄りで成行売り等を電車内で判断できるようにする。日中リアルタイム監視は
+// 作らない(通知過多=狼狽売買の誘発、コスト増を避ける)。価格で決まる出口は
+// 事前の指値・逆指値で自動執行する前提。ここはイベント急変の検知に絞る。
+const EXIT_ALERT_THRESHOLD_PCT = 5  // 前日比 ±5% 以上を「出口注意」とする
+
+async function preMarketExitAlerts(): Promise<string[]> {
+  // 即売却可能な自由売買口座の個別株 + active な売り注文の銘柄を対象
+  // (持株会mochikabu・積立NISAは即売却不可なので除外)
+  const [holdingsRes, ordersRes] = await Promise.all([
+    adminSupabase.from('holdings').select('ticker, name, account_type, current_price'),
+    adminSupabase.from('orders').select('ticker, name, order_type, price, status').eq('status', 'active'),
+  ])
+  const holdings = (holdingsRes.data ?? []).filter(
+    h => /^\d{4}$/.test(h.ticker ?? '') && ['nisa_growth', 'tokutei'].includes(h.account_type)
+  )
+  const sellOrders = (ordersRes.data ?? []).filter(
+    o => /^\d{4}$/.test(o.ticker ?? '') && o.order_type === 'sell'
+  )
+
+  // 対象ティッカーを重複排除（保有 ∪ 売り注文）
+  const targets = new Map<string, { name: string; held: boolean; sellPrice: number | null }>()
+  for (const h of holdings) targets.set(h.ticker!, { name: h.name, held: true, sellPrice: null })
+  for (const o of sellOrders) {
+    const ex = targets.get(o.ticker!)
+    if (ex) ex.sellPrice = o.price != null ? Number(o.price) : null
+    else targets.set(o.ticker!, { name: o.name, held: false, sellPrice: o.price != null ? Number(o.price) : null })
+  }
+  if (targets.size === 0) return []
+
+  // 各銘柄の前日比を取得（寄り前気配 or 場中の最新値）
+  const tickers = [...targets.keys()]
+  const quotes = await Promise.all(
+    tickers.map(async t => ({ ticker: t, quote: await fetchQuoteWithChange(t) }))
+  )
+
+  const alerts: string[] = []
+  for (const { ticker, quote } of quotes) {
+    if (!quote) continue
+    const meta = targets.get(ticker)!
+    if (Math.abs(quote.changePct) < EXIT_ALERT_THRESHOLD_PCT) continue
+    const dir = quote.changePct >= 0 ? '🟢' : '🔴'
+    const sign = quote.changePct >= 0 ? '+' : ''
+    const ctxLabel = quote.changePct >= 0
+      ? (meta.held ? '利確を判断（寄りで動けるうちに）' : '上昇中・売り指値の見直し')
+      : (meta.held ? '損切ライン・保有方針を確認' : '下落中・注文見直し')
+    let line = `${dir} ${meta.name}(${ticker}) 前日比${sign}${quote.changePct.toFixed(1)}% 現在値${Math.round(quote.price).toLocaleString()}円\n  ${ctxLabel}`
+    if (meta.sellPrice != null) {
+      const toSell = ((meta.sellPrice - quote.price) / quote.price) * 100
+      line += `（売り指値${meta.sellPrice.toLocaleString()}円まで${toSell >= 0 ? '+' : ''}${toSell.toFixed(1)}%）`
+    }
+    alerts.push(line)
+  }
+  // 変動の大きい順
+  return alerts
+}
+
 // ── 集中度警告: 自由売買口座で 30%/40% 超の銘柄を抽出 ─────────────────
 // 集中度計算: 月次サマリー向けに上位銘柄の占有率を返す
 async function concentrationSummary(): Promise<string[]> {
@@ -120,10 +179,11 @@ async function concentrationSummary(): Promise<string[]> {
 // AI 出口判定 (exit-judgment) の prompt には引き続き集中度が含まれるので、
 // 売買判断時には反映される。
 async function morningCheck(): Promise<string | null> {
-  const [orderRes, divResult, earningsReminders] = await Promise.all([
+  const [orderRes, divResult, earningsReminders, exitAlerts] = await Promise.all([
     adminSupabase.from('orders').select('*').eq('status', 'active'),
     dividendCalendar(),
     earningsCalendar(),
+    preMarketExitAlerts(),
   ])
 
   const urgent = (orderRes.data ?? []).filter(o => {
@@ -133,10 +193,17 @@ async function morningCheck(): Promise<string | null> {
   })
 
   // 何もなければ通知スキップ
-  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0) return null
+  if (urgent.length === 0 && divResult.reminders.length === 0 && earningsReminders.length === 0 && exitAlerts.length === 0) return null
 
   const dateLabel = jstDateLabel(jstNow())
   let msg = `🌅 朝レポート｜${dateLabel}\n\n`
+
+  // 寄り前・出口注意銘柄（最優先で先頭に。〜9:15に動けるうちに気づけるよう）
+  if (exitAlerts.length > 0) {
+    msg += `📈 寄り前・出口注意（前日比${EXIT_ALERT_THRESHOLD_PCT}%超の保有/注文銘柄）\n`
+    exitAlerts.forEach(a => { msg += `${a}\n` })
+    msg += `\n`
+  }
 
   if (urgent.length > 0) {
     msg += `⏰ 注文期限アラート\n`
