@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { claudeGenerate, ClaudeMessage } from '@/lib/claude'
 import { geminiGenerate } from '@/lib/gemini' // orders/parse等の画像解析で引き続き使用
 import { adminSupabase } from '@/lib/supabase'
-import { fetchMentionedPrices, fetchPrice, fetchYahooBars, extractTickers } from '@/lib/stock-price'
+import { fetchMentionedPrices, fetchPrice, fetchYahooBars, extractTickers, fetchQuoteWithChange } from '@/lib/stock-price'
 import { fetchMarketStats, fetchMultipleStockInfo, fetchEarningsInfo } from '@/lib/kabutan'
 import { recalcNisaUsed } from '@/lib/nisa-sync'
 import { getNisaStatus } from '@/lib/nisa'
@@ -117,6 +117,17 @@ ${BANNED_PHRASES}
 - 市場心理が「強気」の日は、個別株の上値期待が高まる傾向
 - 保有銘柄が売買代金ランキングに入れば「注目度上昇」のサイン
 
+# 判断の出し方（売却・買い・配分など重要な判断を求められたとき）
+このAPIは「判断を基本的にAIに委ねる」コンセプト。判断を求められたら逃げずに明確に下す。
+ただし本人の感想で結論が歪むのを防ぐため、必ず2段階で示すこと:
+- **【1. 純判断】**: 本人の意見・希望・気分を一切考慮せず、データ(リアルタイム価格・保有ルール・方針・
+  NISA枠・税)と論理だけで出す結論。これがバイアスのないアンカー。先にこれを言い切る。
+- **【2. 心理・本人要因の考慮】**: その上で、本人の印象・感想・「気にしてしまう/揺らぐ」等の
+  非金銭の要因を重ねて調整する。利確判断では「含み益のブレに耐える精神的コストが運用継続を
+  脅かすか」=運用者の持続性も軸に入れる(これは銘柄でなく本人の持続性の問題)。
+- 2段階を分けることで、後から「感情で判断が歪んだか」を検証できる。混ぜない。
+- 最終的な引き金(実際に売買するか)は本人。AIは判断と両論を示すまで。
+
 # 役割
 投資アドバイザー。守りの分析家・成長論者・逆張り屋・長期思考家の視点を統合し、
 山田さん（50歳）の個別株投資をサポートする。コンテキストを全て読んだうえで回答すること。
@@ -189,18 +200,46 @@ async function getPortfolioContext(realtimePrices?: Record<string, number>): Pro
   ctx += `【ポートフォリオ概要（※全て万円単位・合計は1億円未満）】
 ・合計: ${toMan(total)}（インデックス投信 ${toMan(indexTotal)} ＋ 個別株 ${toMan(stockTotal)}）\n\n`
 
-  ctx += `【保有銘柄明細（この価格は信頼できる最新データ・AIは自力換算しないこと）】\n`
+  // 個別株(4桁)の保有はリアルタイム価格で損益を再計算する。
+  // holdings.current_price は15:40の更新cronでしか動かず、場中の利確相談で古い損益を
+  // 見て判断する実害があった(石原産業: DB+21%だが実際は+27%で利確トリガー超え)。
+  // 利確判断は価格が核なので、保有もリアルタイム化する。投信(非4桁)はDB値のまま。
+  const heldStockTickers = holdings
+    .map(h => h.ticker)
+    .filter((t): t is string => !!t && /^\d{4}$/.test(t))
+  const liveQuotes = new Map<string, { price: number; changePct: number }>()
+  await Promise.all(
+    heldStockTickers.map(async t => {
+      const q = await fetchQuoteWithChange(t)
+      if (q) liveQuotes.set(t, { price: q.price, changePct: q.changePct })
+    })
+  )
+
+  ctx += `【保有銘柄明細（個別株はリアルタイム価格で損益再計算済み・AIは自力換算しないこと）】\n`
   holdings.forEach(h => {
-    const price = h.current_price != null ? `現在値${h.current_price.toLocaleString()}円` : '現在値不明'
-    const evalMan = h.evaluation_amount != null ? `評価額${toMan(h.evaluation_amount)}` : '評価額不明'
-    const gain = h.unrealized_gain != null ? `損益${h.unrealized_gain >= 0 ? '+' : ''}${toMan(h.unrealized_gain)}` : '損益不明'
     const accountLabel =
       h.account_type === 'tokutei' ? '特定口座' :
       h.account_type === 'mochikabu' ? '持株会（売却には移管手続き必要・NISA・特定口座とは別管理）' :
       h.account_type === 'nisa_growth' ? 'NISA成長枠' :
       h.account_type === 'nisa_tsumitate' ? 'NISAつみたて枠' :
       h.account_type ?? 'その他'
-    ctx += `・${h.name}(${h.ticker ?? 'インデックス'}) ${accountLabel}: ${price} ${evalMan} ${gain}\n`
+
+    const live = h.ticker ? liveQuotes.get(h.ticker) : undefined
+    if (live && h.purchase_price != null && h.quantity != null) {
+      // リアルタイム価格で損益を再計算
+      const buyPrice = Number(h.purchase_price)
+      const qty = Number(h.quantity)
+      const evalAmount = live.price * qty
+      const gain = (live.price - buyPrice) * qty
+      const gainPct = buyPrice > 0 ? ((live.price - buyPrice) / buyPrice) * 100 : 0
+      ctx += `・${h.name}(${h.ticker}) ${accountLabel}: 現在値${Math.round(live.price).toLocaleString()}円(リアルタイム・前日比${live.changePct >= 0 ? '+' : ''}${live.changePct.toFixed(1)}%) 評価額${toMan(evalAmount)} 損益${gain >= 0 ? '+' : ''}${toMan(gain)}(${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}%)\n`
+    } else {
+      // 投信・取得単価不明等はDB値のまま
+      const price = h.current_price != null ? `現在値${h.current_price.toLocaleString()}円` : '現在値不明'
+      const evalMan = h.evaluation_amount != null ? `評価額${toMan(h.evaluation_amount)}` : '評価額不明'
+      const gain = h.unrealized_gain != null ? `損益${h.unrealized_gain >= 0 ? '+' : ''}${toMan(h.unrealized_gain)}` : '損益不明'
+      ctx += `・${h.name}(${h.ticker ?? 'インデックス'}) ${accountLabel}: ${price} ${evalMan} ${gain}\n`
+    }
   })
 
   if (realtimePrices && Object.keys(realtimePrices).length > 0) {
